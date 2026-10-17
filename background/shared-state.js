@@ -58,7 +58,7 @@ export function startSwKeepalive(name) {
           console.error('[tick] Unhandled rejection:', getErrorMessage(e));
         });
       } else if (chrome && chrome.runtime && chrome.runtime.getPlatformInfo) {
-        chrome.runtime.getPlatformInfo(() => {});
+        chrome.runtime.getPlatformInfo().catch(() => {});
       }
     } catch (_e) { /* chrome API not available */ }
   };

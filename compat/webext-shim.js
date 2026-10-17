@@ -214,15 +214,52 @@ export function makeFakeSidePanel(browser) {
   };
 }
 
+
+// Wrap a promise-style browser.* API object to also support callback-style calls.
+// When the last argument is a function, it is treated as a callback: the promise
+// result is passed to it on success, or chrome.runtime.lastError is set on error.
+function wrapWithCallbackSupport(obj) {
+  if (!obj || typeof obj !== "object") return obj;
+  // Do not wrap event objects (they have addListener/removeListener)
+  if (typeof obj.addListener === "function") return obj;
+  var wrapped = {};
+  for (var key of Object.keys(obj)) {
+    var val = obj[key];
+    if (typeof val === "function") {
+      wrapped[key] = function() {
+        var args = Array.prototype.slice.call(arguments);
+        var lastArg = args[args.length - 1];
+        if (typeof lastArg === "function") {
+          var callback = lastArg;
+          args.pop();
+          return val.apply(obj, args).then(function(result) {
+            callback(result);
+          }).catch(function(err) {
+            if (typeof chrome !== "undefined" && chrome.runtime) {
+              chrome.runtime.lastError = { message: String(err) };
+            }
+            callback(undefined);
+          });
+        }
+        return val.apply(obj, args);
+      };
+    } else if (val && typeof val === "object") {
+      wrapped[key] = wrapWithCallbackSupport(val);
+    } else {
+      wrapped[key] = val;
+    }
+  }
+  return wrapped;
+}
+
 export function installWebextShim(browser) {
   if (!browser) throw new Error('[SO-93] browser namespace not found — not a WebExtension context?');
   const chrome = {};
   for (const ns of REAL_NAMESPACES) {
-    if (browser[ns]) chrome[ns] = browser[ns];
+    if (browser[ns]) chrome[ns] = wrapWithCallbackSupport(browser[ns]);
   }
   chrome.debugger = makeFakeDebugger(browser);
   chrome.sidePanel = makeFakeSidePanel(browser);
-  chrome.tabGroups = { update: async () => undefined, query: async () => [] };
   globalThis.chrome = chrome;
   return chrome;
 }

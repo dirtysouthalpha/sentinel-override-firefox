@@ -15,7 +15,8 @@
     "alarms",
     "notifications",
     "downloads",
-    "contextMenus"
+    "contextMenus",
+    "nativeMessaging"
   ],
   "action": {
     "default_title": "Sentinel Override",
