@@ -8,7 +8,7 @@
  * @module background/uap-server
  */
 
-import { v4 as uuidv4 } from 'uuid';
+const uuidv4 = () => crypto.randomUUID();
 import { getErrorMessage } from './error-utils.js';
 
 // Precompile regex for tenant validation (performance optimization)
