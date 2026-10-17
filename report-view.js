@@ -57,7 +57,7 @@
           .replace(/\[src:([a-z0-9_\-]+)\]/gi, '<span class="src-chip" title="Source: $1">$1</span>')
           .replace(/\[unverified\]/gi, '<span class="src-unverified">unverified</span>');
 
-        document.getElementById('reportBody').innerHTML = decorated;
+        document.getElementById('reportBody').innerHTML = sanitizeHtml(decorated);
         document.title = 'Sentinel Override — ' + (data.goal ? data.goal.substring(0, 60) : 'Investigation Report');
       } catch (e) {
         document.getElementById('reportBody').innerHTML =

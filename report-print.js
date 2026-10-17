@@ -1,3 +1,24 @@
+
+function sanitizeHtml(dirty) {
+  if (!dirty) return '';
+  var div = document.createElement('div');
+  div.innerHTML = dirty;
+  var scripts = div.querySelectorAll('script');
+  for (var i = 0; i < scripts.length; i++) scripts[i].remove();
+  var all = div.querySelectorAll('*');
+  for (var i = 0; i < all.length; i++) {
+    var el = all[i];
+    var attrs = el.attributes;
+    for (var j = attrs.length - 1; j >= 0; j--) {
+      var name = attrs[j].name.toLowerCase();
+      var value = attrs[j].value.toLowerCase();
+      if (name.startsWith('on') || value.startsWith('javascript:')) {
+        el.removeAttribute(attrs[j].name);
+      }
+    }
+  }
+  return div.innerHTML;
+}
 (async function() {
       try {
         const stored = await chrome.storage.local.get(['_pendingPrintReport']);
@@ -22,7 +43,7 @@
           .replace(/\[src:([a-z0-9_\-]+)\]/gi, '<span class="src-chip">$1</span>')
           .replace(/\[unverified\]/gi, '<span class="src-unverified">unverified</span>');
 
-        document.getElementById('reportBody').innerHTML = decorated;
+        document.getElementById('reportBody').innerHTML = sanitizeHtml(decorated);
 
         // Trigger the print dialog after a brief render delay so styles
         // apply and the user sees the page first.
