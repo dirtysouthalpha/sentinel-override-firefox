@@ -1,0 +1,1063 @@
+<!DOCTYPE html>
+<!-- Verified 2026-05-06 -->
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="fonts/fonts.css">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <!-- CRT Scanline Overlay -->
+  <div class="scanline-overlay"></div>
+
+  <!-- (3.17.0) Left Action Rail — icon-only navigation, frees up the header
+       so all controls are reachable without expanding the sidebar. Buttons
+       keep their original IDs so chat.js handlers don't need rewiring. -->
+  <nav id="action-rail" aria-label="Sentinel actions">
+    <button class="rail-btn" id="newChatBtn" title="New chat (Cmd+N)">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+      </svg>
+    </button>
+    <div class="rail-divider"></div>
+    <button class="rail-btn" id="templatesBtn" title="Templates & Runbooks">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="3" width="7" height="7"></rect>
+        <rect x="14" y="3" width="7" height="7"></rect>
+        <rect x="14" y="14" width="7" height="7"></rect>
+        <rect x="3" y="14" width="7" height="7"></rect>
+      </svg>
+    </button>
+    <button class="rail-btn" id="schedulerBtn" title="Schedules">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="10"></circle>
+        <polyline points="12 6 12 12 16 14"></polyline>
+      </svg>
+    </button>
+    <button class="rail-btn" id="runLogHistoryRailBtn" title="Run Log History">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+        <polyline points="14 2 14 8 20 8"></polyline>
+        <line x1="9" y1="13" x2="15" y2="13"></line>
+        <line x1="9" y1="17" x2="15" y2="17"></line>
+      </svg>
+    </button>
+    <!-- (3.24.0) Recent Chats — restores archived chat sessions from before side-panel close -->
+    <button class="rail-btn" id="recentChatsRailBtn" title="Recent Chats">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3 12a9 9 0 1 0 9-9c-2.39 0-4.68.94-6.4 2.6L3 8"></path>
+        <polyline points="3 3 3 8 8 8"></polyline>
+        <circle cx="12" cy="12" r="0.8"></circle>
+        <line x1="12" y1="8" x2="12" y2="12"></line>
+        <line x1="12" y1="12" x2="15.5" y2="13.5"></line>
+      </svg>
+    </button>
+    <!-- (3.25.0) Telemetry Panel — slide-up live event stream for diagnosing hangs -->
+    <button class="rail-btn" id="telemetryRailBtn" title="Live Telemetry">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+      </svg>
+    </button>
+    <div class="rail-divider"></div>
+    <button class="rail-btn" id="commandPaletteBtn" title="Command palette (Cmd+K)">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+        <path d="M9 11h6"></path>
+        <path d="M9 15h6"></path>
+      </svg>
+    </button>
+    <button class="rail-btn" id="settingsBtn" title="Settings">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="3"></circle>
+        <path d="M12 1v6m0 6v6M4.22 4.22l4.24 4.24m5.08 5.08l4.24 4.24M1 12h6m6 0h6M4.22 19.78l4.24-4.24m5.08-5.08l4.24-4.24"></path>
+      </svg>
+    </button>
+    <div class="rail-spacer"></div>
+    <button class="rail-btn" id="themeToggle" title="Toggle dark mode">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="5"></circle>
+        <line x1="12" y1="1" x2="12" y2="3"></line>
+        <line x1="12" y1="21" x2="12" y2="23"></line>
+        <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+        <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+        <line x1="1" y1="12" x2="3" y2="12"></line>
+        <line x1="21" y1="12" x2="23" y2="12"></line>
+        <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+        <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+      </svg>
+    </button>
+  </nav>
+
+  <!-- Active Tab Strip (3.7.1) — surfaces WHAT the agent is doing and WHERE.
+       Always shown during a run; hidden between runs. -->
+  <div id="active-tab-strip" class="active-tab-strip" style="display:none;">
+    <img id="ats-favicon" class="ats-favicon" src="" alt="">
+    <div class="ats-info">
+      <div class="ats-line1">
+        <span id="ats-host" class="ats-host">—</span>
+        <span id="ats-step" class="ats-step"></span>
+      </div>
+      <div id="ats-title" class="ats-title"></div>
+      <div id="ats-action" class="ats-action">Initializing…</div>
+    </div>
+    <button id="ats-focus-btn" class="ats-focus-btn" title="Open the agent's working tab in Chrome">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M14 3h7v7"></path>
+        <path d="M10 14L21 3"></path>
+        <path d="M21 14v7H3V3h7"></path>
+      </svg>
+      <span>Focus</span>
+    </button>
+  </div>
+  <!-- Header -->
+  <div class="header">
+    <div class="header-title">
+      <img src="icon-48.png" alt="" class="header-logo">
+      <span class="header-brand">SENTINEL<span class="brand-underscore">_</span>OVERRIDE</span>
+      <span id="modeBadge" class="mode-badge approval">APPROVAL</span>
+      <span id="tenantChip" class="tenant-chip" style="display:none;" title="Detected Microsoft tenant (3.7.0)"></span>
+      <button id="clientChip" class="chip-btn" title="Active client for this run (3.12.0). Click to switch or manage.">
+        <span style="opacity:0.7;">CLIENT:</span> <span id="clientChipName">none</span>
+      </button>
+      <button id="quickAssistHeaderBtn" class="chip-btn" title="Quick Assist — select text on any page for instant AI (3.46.0)">
+        <span style="font-size:13px;">⚡</span> <span id="quickAssistHeaderLabel">Quick Assist</span>
+      </button>
+      <span id="activeIndicator" class="active-indicator" title="Agent active"></span>
+    </div>
+    <!-- (3.17.0) Header buttons moved to left action rail (#action-rail). -->
+  </div>
+
+  <!-- Toolbar -->
+  <div class="toolbar">
+    <div class="search-box">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="11" cy="11" r="8"></circle>
+        <path d="m21 21-4.35-4.35"></path>
+      </svg>
+      <input type="text" id="searchInput" placeholder="Search messages...">
+      <span class="search-result-count" id="searchCount" style="display: none;"></span>
+    </div>
+    <div class="toolbar-divider"></div>
+    <!-- Quick-switch model dropdown (free OpenRouter models) -->
+    <div id="quickModelSwitcher" class="quick-model-switcher" title="Switch AI model on the fly">
+      <select id="quickModelSelect" class="quick-model-select">
+        <option value="">Loading models...</option>
+      </select>
+      <span id="quickModelCreditBadge" class="credit-badge" title="Daily usage" style="display:none;">$0.00</span>
+    </div>
+    <div class="toolbar-divider"></div>
+    <button class="toolbar-icon-btn" id="previewBtn" title="Markdown preview">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+        <circle cx="12" cy="12" r="3"></circle>
+      </svg>
+    </button>
+    <button class="toolbar-icon-btn" id="attachBtn" title="Attach file">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
+      </svg>
+    </button>
+    <button class="toolbar-icon-btn" id="exportBtn" title="Export conversation">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+        <polyline points="7 10 12 15 17 10"></polyline>
+        <line x1="12" y1="15" x2="12" y2="3"></line>
+      </svg>
+    </button>
+  </div>
+
+  <!-- Agent Tab Bar -->
+  <div id="agent-tab-bar"></div>
+
+  <!-- Chat Container -->
+  <div id="chat-container">
+    <div class="welcome-message">
+      <h2>Sentinel Override</h2>
+      <p>Automate your browser tasks with AI. What would you like me to do?</p>
+      <div class="example-prompts" style="margin-top:18px; display:flex; flex-direction:column; gap:8px;">
+        <div style="font-size:11px; color:var(--text-tertiary, #888); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:4px;">Try one of these to get started:</div>
+        <button class="example-prompt-btn" data-prompt="Pull the last 50 sign-in events from Entra for user [email] and flag any from unfamiliar IPs.">
+          <span style="opacity:0.6;">→</span>&nbsp;Audit Entra sign-ins for a user
+        </button>
+        <button class="example-prompt-btn" data-prompt="Run a message trace in Exchange admin center for sender [from] to recipient [to] in the last 24 hours.">
+          <span style="opacity:0.6;">→</span>&nbsp;Run an Exchange message trace
+        </button>
+        <button class="example-prompt-btn" data-prompt="Open the SonicWall web UI, navigate to VPN > Settings, and list every Site-to-Site tunnel with its status.">
+          <span style="opacity:0.6;">→</span>&nbsp;Audit SonicWall VPN tunnels
+        </button>
+        <button class="example-prompt-btn" data-prompt="Look up the SHA256 hash [hash] in VirusTotal and summarize the verdict, AV detections, and any related URLs / IPs.">
+          <span style="opacity:0.6;">→</span>&nbsp;VirusTotal hash lookup
+        </button>
+      </div>
+      <div style="margin-top:14px; font-size:11px; color:var(--text-tertiary, #888); line-height:1.5;">
+        Tip: open Templates (top bar) for one-click playbooks, or pick a Client (header chip) to inject site-specific knowledge into the run.
+      </div>
+    </div>
+  </div>
+
+  <!-- Templates Panel -->
+  <div id="templates-panel" style="display:none;flex:1;overflow-y:auto;padding:16px;flex-direction:column;gap:12px;">
+    <div class="flex-between mb-4">
+      <h2 style="font-size:16px;font-weight:600;color:var(--text-primary);margin:0;">Templates & Runbooks</h2>
+      <div class="flex-row">
+        <button id="importTemplatesBtn" class="small-btn" title="Import templates from JSON file">Import</button>
+        <button id="exportAllTemplatesBtn" class="small-btn" title="Export all templates as JSON">Export All</button>
+        <button id="createTemplateBtn" class="small-btn btn-accent">+ New Template</button>
+      </div>
+    </div>
+    <div class="flex-row gap-8" style="margin-bottom:8px;">
+      <input type="text" id="templateSearchInput" placeholder="Search templates..." class="form-input" style="flex:1;border-radius:8px;">
+      <input type="text" id="templateTagFilter" placeholder="Filter by tag..." class="form-input" style="width:140px;border-radius:8px;">
+    </div>
+    <div id="template-list"></div>
+  </div>
+
+  <!-- Schedules Panel -->
+  <div id="schedules-panel" style="display:none;flex:1;overflow-y:auto;padding:16px;flex-direction:column;gap:12px;">
+    <div class="flex-between mb-4">
+      <h2 style="font-size:16px;font-weight:600;color:var(--text-primary);margin:0;">Schedules</h2>
+      <button id="createScheduleBtn" class="small-btn btn-accent">+ New Schedule</button>
+    </div>
+    <div id="schedule-list"></div>
+  </div>
+  </div>
+
+  <!-- Input Area -->
+  <div id="input-area" class="input-area">
+    <div id="approvalCardContainer"></div>
+    <div id="attachmentPreview" class="attachment-preview" style="display: none;"></div>
+    <div class="input-container">
+      <div class="textarea-wrapper">
+        <textarea id="goalInput" placeholder="Tell me what to do..." rows="1"></textarea>
+        <div class="action-buttons">
+          <button id="pasteTicketBtn" class="action-btn" title="Paste Ticket — structured ticket import">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path>
+              <rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect>
+            </svg>
+          </button>
+          <button id="voiceBtn" class="action-btn" title="Voice input (click to speak)">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 1a3 3 0 0 0-3 3v12a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+              <line x1="12" y1="19" x2="12" y2="23"></line>
+              <line x1="8" y1="23" x2="16" y2="23"></line>
+            </svg>
+          </button>
+          <button id="sendBtn" class="action-btn" title="Send message (Enter)">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M16.6915026,12.4744748 L3.50612381,13.2599618 C3.19218622,13.2599618 3.03521743,13.4170592 3.03521743,13.5741566 L1.15159189,20.0151496 C0.8376543,20.8006365 0.99,21.89 1.77946707,22.52 C2.41,22.99 3.50612381,23.1 4.13399899,22.8429026 L21.714504,14.0454487 C22.6563168,13.5741566 23.1272231,12.6315722 22.9702544,11.6889879 L4.13399899,1.16857446 C3.34915502,0.9114770592 2.40734225,1.02286667 1.77946707,1.4941588 C0.994623095,2.13399899 0.837654326,3.22915502 1.15159189,3.9789712 L3.03521743,10.4199641 C3.03521743,10.5770615 3.19218622,10.7341589 3.50612381,10.7341589 L16.6915026,11.5196458 C16.6915026,11.5196458 17.1624089,11.5196458 17.1624089,12.0004306 C17.1624089,12.4744748 16.6915026,12.4744748 16.6915026,12.4744748 Z"></path>
+            </svg>
+          </button>
+          <button id="pauseBtn" class="action-btn btn-pause" style="display: none;" title="Pause agent" data-paused="false">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+              <rect x="6" y="4" width="4" height="16" rx="1"></rect>
+              <rect x="14" y="4" width="4" height="16" rx="1"></rect>
+            </svg>
+          </button>
+          <button id="stopBtn" class="action-btn btn-stop" style="display: none;" title="Stop agent">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+              <rect x="6" y="6" width="12" height="12" rx="1"></rect>
+            </svg>
+          </button>
+          <button id="undoBtn" class="action-btn" style="display: none;" title="Undo last action" disabled>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="9 14 4 9 9 4"></polyline>
+              <path d="M20 20v-7a4 4 0 0 0-4-4H4"></path>
+            </svg>
+          </button>
+        </div>
+      </div>
+    </div>
+    <div id="status" style="display: none; margin-top: 8px;">
+      <div class="status-indicator">
+        <span class="loading-dot"></span>
+        <span class="loading-dot"></span>
+        <span class="loading-dot"></span>
+        <span id="status-text">Agent is working...</span>
+      </div>
+    </div>
+    <div class="input-footer">Press Enter to send • Shift+Enter for new line • Cmd+K for commands</div>
+    <!-- Mid-run context injection bar — visible only while agent is running -->
+    <div id="injectContextBar" style="display:none; margin-top:6px; gap:6px; align-items:center;">
+      <input id="injectContextInput" type="text" placeholder="📌 Add a note for the running agent…"
+        style="flex:1; padding:5px 8px; border-radius:6px; border:1px solid var(--border-color); background:var(--input-bg,var(--bg-secondary)); color:var(--text-primary); font-size:12px;" />
+      <button id="injectContextBtn" title="Send note to agent"
+        style="padding:5px 10px; border-radius:6px; border:none; background:var(--accent-color,#3b82f6); color:#fff; font-size:12px; cursor:pointer; white-space:nowrap;">Send Note</button>
+    </div>
+  </div>
+
+  <!-- Markdown Preview Panel -->
+  <!-- (3.34.0) Header now includes a close × button so the preview can be
+       dismissed when it covers the previewBtn or the operator can't easily
+       reach the bottom toolbar. Click-outside + Escape also close it. -->
+  <div class="markdown-preview" id="markdownPreview">
+    <div class="markdown-preview-header" style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+      <span>Markdown Preview</span>
+      <button id="markdownPreviewCloseBtn" title="Close preview (Esc)" style="background:transparent; border:none; color:var(--text-secondary); font-size:18px; line-height:1; cursor:pointer; padding:2px 6px;">×</button>
+    </div>
+    <div class="markdown-preview-content" id="previewContent"></div>
+  </div>
+
+  <!-- Command Palette -->
+  <div class="command-palette-backdrop" id="commandPaletteBackdrop"></div>
+  <div class="command-palette" id="commandPalette">
+    <div class="command-input">
+      <input type="text" id="commandInput" placeholder="Type a command...">
+    </div>
+    <div class="command-list" id="commandList"></div>
+  </div>
+
+  <!-- Settings Modal -->
+  <div id="settings-modal" class="modal">
+    <div class="modal-content" style="max-width:580px;">
+      <div class="flex-between" style="margin-bottom:16px;">
+        <h2 style="margin:0;">Settings</h2>
+        <button id="closeSettingsBtn" class="icon-btn" title="Close" style="background:transparent;border:none;color:var(--text-secondary);font-size:20px;cursor:pointer;">×</button>
+      </div>
+
+      <!-- ══════ PROVIDER SETUP ══════ -->
+      <div class="settings-card">
+        <div class="settings-card-title">Provider Setup</div>
+
+        <!-- Provider catalog dropdown (single source of truth) -->
+        <div class="modal-field form-field" style="margin-bottom:10px;">
+          <label>Select Provider</label>
+          <select id="providerCatalogSelect" class="form-input">
+            <option value="">— Pick a provider —</option>
+          </select>
+        </div>
+
+        <!-- Provider config card -->
+        <div style="background:var(--bg-primary);border:1px solid var(--border-color);border-radius:6px;padding:12px;margin-bottom:10px;">
+          <div class="form-grid-2">
+            <div class="modal-field span-2">
+              <label>API Endpoint</label>
+              <input type="text" id="set-provider-endpoint" placeholder="https://api.example.com/v1/..." class="form-input">
+            </div>
+            <div class="modal-field">
+              <label>API Key</label>
+              <input type="password" id="set-provider-key" placeholder="API key" class="form-input">
+            </div>
+            <div class="modal-field">
+              <label>Model</label>
+              <input type="text" id="set-provider-model" placeholder="Model ID" class="form-input">
+            </div>
+          </div>
+
+          <!-- Detect models row -->
+          <div class="flex-row" style="margin-top:8px;">
+            <button type="button" id="detectModelsBtn" style="padding:6px 12px;border-radius:6px;border:1px solid var(--accent-primary);background:rgba(255,107,0,0.1);color:var(--accent-primary);cursor:pointer;font-size:11px;font-weight:600;white-space:nowrap;">🔍 Detect Models</button>
+            <select id="detectedModelsSelect" disabled class="form-btn-sm" style="flex:1;">
+              <option value="">(no models detected yet)</option>
+            </select>
+            <button type="button" id="useDetectedModelBtn" disabled class="form-btn-sm">Use</button>
+          </div>
+        </div>
+
+        <!-- Test connection -->
+        <button type="button" id="testConnectionBtn" class="form-btn-sm" style="width:100%;padding:8px;font-size:13px;">🔌 Test Connection</button>
+
+        <!-- ══════ CREDIT PROTECTION ══════ -->
+        <div style="background:var(--bg-primary);border:1px solid var(--border-color);border-radius:6px;padding:12px;margin-top:10px;">
+          <div class="settings-card-title" style="font-size:12px;margin-bottom:8px;">🛡️ Credit Protection (OpenRouter)</div>
+          <div class="form-grid-2">
+            <div class="modal-field">
+              <label>Daily Limit ($)</label>
+              <input type="number" id="creditLimitInput" class="form-input" min="0" step="0.50" value="5.00" placeholder="5.00">
+            </div>
+            <div class="modal-field">
+              <label>Today's Usage</label>
+              <div id="creditUsageDisplay" style="padding:8px;background:var(--bg-tertiary);border-radius:4px;font-size:12px;color:var(--text-secondary);">$0.00 / $5.00 (0 calls)</div>
+            </div>
+          </div>
+          <div class="text-subtle" style="margin-top:6px;font-size:10px;">Free models cost $0. Limit prevents accidental spend on paid models. Resets daily.</div>
+        </div>
+
+        <!-- Persisted-state indicator -->
+        <div id="providerSaveStatus" role="status" aria-live="polite" style="display:none;font-size:11px;margin-top:6px;font-weight:600;"></div>
+
+        <div class="text-subtle" style="margin-top:8px;">
+          Pick a provider above → endpoint auto-fills → paste API key → click <strong>Detect Models</strong> to list available models, or type a model ID manually. Local providers (Ollama, LM Studio, KoboldCpp) need no key.
+        </div>
+      </div>
+
+      <!-- ══════ QUICK PRESETS ══════ -->
+      <details class="details-panel">
+        <summary>Quick Presets <span>(click to expand)</span></summary>
+        <div class="details-panel-body">
+          <div class="preset-row-label">Free / Low Cost</div>
+          <div class="preset-row">
+            <button type="button" class="preset-btn" data-provider="openai" data-endpoint="https://api.groq.com/openai/v1/chat/completions" data-model="llama-3.3-70b-versatile">⚡ Groq (Llama 3.3 70B)</button>
+            <button type="button" class="preset-btn" data-provider="openai" data-endpoint="https://generativelanguage.googleapis.com/v1beta/openai/chat/completions" data-model="gemini-2.0-flash">🆓 Gemini 2.0 Flash</button>
+            <button type="button" class="preset-btn" data-provider="openai" data-endpoint="https://openrouter.ai/api/v1/chat/completions" data-model="google/gemini-2.0-flash-exp:free">🆓 OpenRouter Free</button>
+            <button type="button" class="preset-btn" data-provider="openai" data-endpoint="https://llm.chutes.ai/v1/chat/completions" data-model="deepseek-ai/DeepSeek-V3">🆓 Chutes.ai</button>
+            <button type="button" class="preset-btn" data-provider="openai" data-endpoint="http://localhost:11434/v1/chat/completions" data-model="llama3.3">🖥️ Ollama Local</button>
+          </div>
+
+          <div class="preset-row-label">Best for Complex Runbooks</div>
+          <div class="preset-row">
+            <button type="button" class="preset-btn" data-provider="anthropic" data-endpoint="https://api.anthropic.com/v1/messages" data-model="claude-haiku-4-5-20251001" style="border-color:var(--warning-color);background:rgba(251,188,0,0.06);">🧠 Claude Haiku</button>
+            <button type="button" class="preset-btn" data-provider="anthropic" data-endpoint="https://api.anthropic.com/v1/messages" data-model="claude-sonnet-4-6" style="border-color:var(--warning-color);background:rgba(251,188,0,0.06);">🧠 Claude Sonnet</button>
+            <button type="button" class="preset-btn" data-provider="openai" data-endpoint="https://openrouter.ai/api/v1/chat/completions" data-model="anthropic/claude-sonnet-4-6">🔀 OpenRouter Sonnet</button>
+            <button type="button" class="preset-btn" data-provider="openai" data-endpoint="https://api.mistral.ai/v1/chat/completions" data-model="mistral-large-latest">Mistral Large</button>
+            <button type="button" class="preset-btn" data-provider="openai" data-endpoint="https://api.deepseek.com/v1/chat/completions" data-model="deepseek-chat">DeepSeek V3</button>
+            <button type="button" class="preset-btn" data-provider="openai" data-endpoint="https://api.venice.ai/api/v1/chat/completions" data-model="llama-3.3-70b">Venice.ai</button>
+          </div>
+        </div>
+      </details>
+
+      <!-- ══════ AGENT BEHAVIOR ══════ -->
+      <div class="settings-card">
+        <div class="settings-card-title">Agent Behavior</div>
+
+        <div class="modal-field form-field">
+          <label>Context Memory <span class="label-muted">(remembered across tabs)</span></label>
+          <textarea id="set-agent-context" rows="2" class="form-input" style="resize:vertical;" placeholder="e.g. Working on React app at localhost:3000. Login: admin/admin"></textarea>
+        </div>
+
+        <div class="form-grid-2 form-field">
+          <div class="modal-field">
+            <label>Export Format</label>
+            <select id="export-format" class="form-input">
+              <option value="markdown">Markdown (.md)</option>
+              <option value="json">JSON (.json)</option>
+              <option value="txt">Text (.txt)</option>
+            </select>
+          </div>
+          <div class="modal-field">
+            <label>Adaptive Prompts</label>
+            <select id="adaptivePromptsModeSelect" class="form-input" style="font-size:12px;">
+              <option value="auto">Auto (silent rewrite)</option>
+              <option value="approval">Approval (review diff)</option>
+              <option value="off">Off</option>
+            </select>
+          </div>
+        </div>
+
+        <div style="display:flex;flex-wrap:wrap;gap:10px;">
+          <div class="toggle-row" style="margin:0;">
+            <div class="toggle-row-label"><span>⚡ Quick Mode</span><span id="quickModeLabel" style="font-size:10px;">OFF</span></div>
+            <label class="toggle-switch"><input type="checkbox" id="quickModeToggle"><span class="toggle-slider"></span></label>
+          </div>
+          <div class="toggle-row" style="margin:0;">
+            <div class="toggle-row-label"><span>Approval Mode</span><span id="approvalModeLabel" style="font-size:10px;">OFF</span></div>
+            <label class="toggle-switch"><input type="checkbox" id="approvalModeToggle"><span class="toggle-slider"></span></label>
+          </div>
+          <div class="toggle-row" style="margin:0;">
+            <div class="toggle-row-label"><span>🔊 Sound</span><span id="soundEnabledLabel" style="font-size:10px;">OFF</span></div>
+            <label class="toggle-switch"><input type="checkbox" id="soundEnabledToggle"><span class="toggle-slider"></span></label>
+          </div>
+          <div class="toggle-row" style="margin:0;">
+            <div class="toggle-row-label"><span>🔒 Trusted Input</span></div>
+            <label class="toggle-switch"><input type="checkbox" id="useTrustedInputToggle"><span class="toggle-slider"></span></label>
+          </div>
+          <div class="toggle-row" style="margin:0;">
+            <div class="toggle-row-label"><span>📶 API Health Bar</span></div>
+            <label class="toggle-switch"><input type="checkbox" id="apiHealthBarToggle"><span class="toggle-slider"></span></label>
+          </div>
+        </div>
+      </div>
+
+      <!-- ══════ TICKET MODE ══════ -->
+      <details class="details-panel">
+        <summary>Ticket Mode (MSP Templates)</summary>
+        <div class="details-panel-body">
+          <div class="toggle-row form-field">
+            <div class="toggle-row-label"><span>Enable Ticket Mode</span></div>
+            <label class="toggle-switch"><input type="checkbox" id="ticketModeToggle"><span class="toggle-slider"></span></label>
+          </div>
+          <div id="ticketFormatRow" class="modal-field" style="display:none;">
+            <label>Default Format</label>
+            <select id="ticketFormatSelect" class="form-input">
+              <option value="auto">Auto</option>
+              <option value="TICKET_KICKOFF">Ticket Kickoff</option>
+              <option value="FINAL_NOTES">Final Notes</option>
+              <option value="WAITING_ON_CLIENT">Waiting on Client</option>
+              <option value="WAITING_ON_VENDOR">Waiting on Vendor</option>
+              <option value="IT_GLUE_KB">IT Glue KB</option>
+              <option value="CLIENT_EMAIL">Client Email</option>
+            </select>
+            <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border-color);">
+              <label class="form-section-label">Technician Details</label>
+              <div class="form-grid-2" style="gap:6px;">
+                <input type="text" id="techNameInput" placeholder="Name" class="form-input-sm">
+                <input type="text" id="techTitleInput" placeholder="Title" class="form-input-sm">
+                <input type="text" id="techCompanyInput" placeholder="Company" class="form-input-sm">
+                <input type="text" id="techPhoneInput" placeholder="Phone" class="form-input-sm">
+                <input type="text" id="techEmailInput" placeholder="Email" class="form-input-sm" style="grid-column:span 2;">
+              </div>
+            </div>
+          </div>
+        </div>
+      </details>
+
+      <!-- ══════ ADVANCED ══════ -->
+      <details class="details-panel">
+        <summary>Advanced Settings</summary>
+        <div class="details-panel-body">
+          <div class="modal-field form-field">
+            <label>Expected Microsoft Tenant</label>
+            <input type="text" id="expectedTenantInput" placeholder="acme.onmicrosoft.com" class="form-input">
+          </div>
+
+          <div class="modal-field" style="background:var(--bg-primary);border:1px solid var(--border-color);border-radius:6px;padding:10px;margin-bottom:8px;">
+            <label style="display:block;margin-bottom:6px;">Telemetry</label>
+            <select id="telemetryLevelSelect" class="form-input-sm" style="width:100%;">
+              <option value="quiet">Quiet (errors only)</option>
+              <option value="normal">Normal</option>
+              <option value="verbose">Verbose</option>
+              <option value="debug">Debug</option>
+            </select>
+            <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;">
+              <label class="check-label">
+                <input type="checkbox" id="telemetryPersistToggle" style="width:14px;height:14px;"> Persist
+              </label>
+              <label class="check-label">
+                <input type="checkbox" id="telemetryRedactToggle" checked style="width:14px;height:14px;"> Redact
+              </label>
+              <label class="check-label">
+                <input type="checkbox" id="telemetrySkillAdaptToggle" checked style="width:14px;height:14px;"> Adaptive Skills
+              </label>
+            </div>
+            <div class="flex-row" style="margin-top:6px;">
+              <button id="skillStatsViewBtn" type="button" class="btn-micro">Skill Stats</button>
+              <button id="skillStatsResetBtn" type="button" class="btn-micro">Reset Stats</button>
+            </div>
+          </div>
+
+          <div class="form-row form-field">
+            <label class="form-section-label">Quick Assist</label>
+            <label class="check-label-lg">
+              <input type="checkbox" id="quickAssistToggle" style="width:16px;height:16px;">
+              <span id="quickAssistLabel">Show floating panel on text selection</span>
+            </label>
+          </div>
+
+          <div class="form-row form-field">
+            <label class="form-section-label">Expansion Mode</label>
+            <select id="adaptiveExpansionModeSelect" class="form-input-sm" style="width:100%;">
+              <option value="light">Light (short goals only)</option>
+              <option value="off">Off</option>
+              <option value="full">Full (risky)</option>
+            </select>
+          </div>
+        </div>
+      </details>
+
+      <!-- ══════ DATA ══════ -->
+      <details class="details-panel">
+        <summary>Data & Patterns</summary>
+        <div class="details-panel-body">
+          <div class="form-row form-field">
+            <label class="flex-between mb-4" style="font-weight:600;font-size:12px;">
+              <span>Learned Patterns</span>
+              <button id="clearAllPatternsBtn" class="btn-danger-sm">Clear All</button>
+            </label>
+            <div id="learnedPatternsList" style="max-height:140px;overflow-y:auto;font-size:11px;color:var(--text-secondary);border:1px solid var(--border-color);border-radius:4px;padding:6px;">
+              <em>Loading…</em>
+            </div>
+          </div>
+          <div class="form-row">
+            <label class="form-section-label">Audit Log</label>
+            <button id="downloadAuditLogBtn" class="form-btn-sm" style="font-size:11px;">Download Audit Log CSV</button>
+          </div>
+        </div>
+      </details>
+
+      <details style="margin-top:12px;">
+        <summary class="form-section-label" style="cursor:pointer;">Plugins</summary>
+        <div style="margin-top:8px;">
+          <div class="form-row">
+            <label class="form-section-label">Registry URL</label>
+            <input type="text" id="pluginRegistryUrl" class="form-input" placeholder="https://registry.sentinel.dev/plugins.json" style="width:100%; font-size:12px;">
+          </div>
+          <div class="form-row">
+            <label class="form-section-label">Install Plugin</label>
+            <div style="display:flex; gap:6px;">
+              <input type="text" id="pluginManifestUrl" class="form-input" placeholder="Manifest URL" style="flex:1; font-size:12px;">
+              <button id="installPluginBtn" class="form-btn-sm" style="font-size:11px;">Install</button>
+            </div>
+          </div>
+          <div id="pluginList" style="margin-top:8px;"></div>
+        </div>
+      </details>
+
+      <div class="modal-actions" style="display:flex; gap:8px; flex-wrap:wrap;">
+        <button id="saveSettingsBtn" class="modal-btn btn-save" style="flex:1;">Save Settings</button>
+        <button id="exportSettingsBtn" class="modal-btn" style="flex:0.5; background:var(--bg-tertiary); color:var(--text-primary); font-size:12px;">Export</button>
+        <button id="importSettingsBtn" class="modal-btn" style="flex:0.5; background:var(--bg-tertiary); color:var(--text-primary); font-size:12px;">Import</button>
+        <input type="file" id="importSettingsFile" accept=".json" style="display:none;">
+      </div>
+    </div>
+  </div>
+
+  <!-- Theme Customizer Modal -->
+  <div id="theme-modal" class="modal">
+    <div class="modal-content">
+      <h2>Customize Theme</h2>
+
+      <div style="margin-bottom: 20px;">
+        <label style="font-size: 13px; color: var(--text-secondary); display: block; margin-bottom: 12px;">Quick Presets</label>
+        <div class="theme-presets">
+          <div class="theme-preset active" data-theme="light">☀️ Light</div>
+          <div class="theme-preset" data-theme="dark">🌙 Dark</div>
+          <div class="theme-preset" data-theme="matrix">💻 Matrix</div>
+          <div class="theme-preset" data-theme="tron">🔷 Tron</div>
+          <div class="theme-preset" data-theme="cyberpunk">⚡ Cyberpunk</div>
+          <div class="theme-preset" data-theme="neon">💜 Neon</div>
+          <div class="theme-preset" data-theme="terminal">🟢 Terminal</div>
+          <div class="theme-preset" data-theme="blood">🩸 Blood</div>
+          <div class="theme-preset" data-theme="sunset">🌅 Sunset</div>
+          <div class="theme-preset" data-theme="ocean">🌊 Ocean</div>
+          <div class="theme-preset" data-theme="midnight">🌌 Midnight</div>
+          <div class="theme-preset" data-theme="paper">📜 Paper</div>
+          <div class="theme-preset" data-theme="forest">🌲 Forest</div>
+          <div class="theme-preset" data-theme="mono">⬛ Mono</div>
+        </div>
+      </div>
+
+      <!-- (3.11.0) Custom CSS — power-user escape hatch. Auto-saves on edit, applies on next popup open. -->
+      <div style="margin-bottom: 20px;">
+        <label style="font-size: 13px; color: var(--text-secondary); display: block; margin-bottom: 6px;">
+          Custom CSS
+          <span style="font-weight: 400; color: var(--text-tertiary); font-size: 11px;"> — paste any CSS to override the look. Auto-saves.</span>
+        </label>
+        <textarea id="customCssTextarea" placeholder="/* Example: */&#10;.header-brand { color: #ff00ff; }&#10;.message.assistant-msg { background: rgba(0, 255, 200, 0.05); }" style="width:100%; min-height:140px; padding:10px; background: var(--bg-input, rgba(255,255,255,0.04)); border:1px solid var(--border-color); border-radius:6px; color: var(--text-primary); font-family: monospace; font-size:11px; line-height:1.4; resize:vertical;"></textarea>
+        <div style="display:flex; gap:8px; margin-top:6px;">
+          <button type="button" id="customCssApplyBtn" style="padding:6px 12px; border-radius:6px; border:1px solid var(--accent-primary, #ff6b00); background:rgba(255,107,0,0.15); color:var(--accent-primary, #ff6b00); cursor:pointer; font-size:11px; font-weight:600;">Apply Now</button>
+          <button type="button" id="customCssClearBtn" style="padding:6px 12px; border-radius:6px; border:1px solid var(--border-color); background:var(--bg-tertiary); color:var(--text-primary); cursor:pointer; font-size:11px;">Clear</button>
+          <span id="customCssStatus" style="margin-left:auto; font-size:10px; color:var(--text-tertiary); align-self:center;"></span>
+        </div>
+        <div style="font-size:10px; color: var(--text-tertiary); margin-top:6px; line-height:1.4;">
+          Targets common selectors: <code>.header</code>, <code>.message</code>, <code>.assistant-msg</code>, <code>.user-msg</code>, <code>.active-tab-strip</code>, <code>.tenant-chip</code>, <code>.message-input</code>. CSS variables: <code>--accent-primary</code>, <code>--bg-primary</code>, <code>--text-primary</code>, <code>--border-color</code>.
+        </div>
+      </div>
+
+      <div class="color-picker">
+        <div class="color-field">
+          <label>Primary Color</label>
+          <input type="color" id="colorPrimary" value="#0084ff">
+        </div>
+        <div class="color-field">
+          <label>Background</label>
+          <input type="color" id="colorBg" value="#ffffff">
+        </div>
+        <div class="color-field">
+          <label>Text</label>
+          <input type="color" id="colorText" value="#0d0d0d">
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button id="closeThemeBtn" class="modal-btn btn-cancel">Cancel</button>
+        <button id="saveThemeBtn" class="modal-btn btn-save">Apply Theme</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Report Modal -->
+  <div id="report-modal" class="modal">
+    <div class="modal-content" style="max-width:560px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <h2 style="margin:0;">Investigation Report</h2>
+        <button id="closeReportBtn" class="icon-btn" title="Close">&times;</button>
+      </div>
+      <div id="report-content" style="line-height:1.6;max-height:60vh;overflow-y:auto;"></div>
+      <div style="display:flex;gap:8px;margin-top:16px;padding-top:12px;border-top:1px solid var(--border-color);flex-wrap:wrap;">
+        <button id="copyReportMdBtn" class="modal-btn btn-save" style="flex:1;min-width:110px;">Copy Markdown</button>
+        <button id="downloadReportBtn" class="modal-btn btn-save" style="flex:1;min-width:110px;">Download .md</button>
+        <button id="exportReportPdfBtn" class="modal-btn btn-save" style="flex:1;min-width:110px;background:var(--accent-primary);color:white;border-color:var(--accent-primary);" title="Open a print-friendly view; pick &quot;Save as PDF&quot; in the print destination dropdown">Export PDF</button>
+        <button id="exportReplayBtn" class="modal-btn btn-save" style="flex:1;min-width:110px;background:#4a9eff;color:white;border-color:#4a9eff;" title="Export an interactive HTML replay with screenshots and reasoning">Export Replay</button>
+        <button id="copyReportTextBtn" class="modal-btn btn-cancel" style="flex:1;min-width:110px;">Copy Plain Text</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Template Create/Edit Modal -->
+  <div id="template-modal" class="modal">
+    <div class="modal-content" style="max-width:520px;">
+      <h2 id="template-modal-title">New Template</h2>
+      <div class="modal-field">
+        <label>Name</label>
+        <input type="text" id="tmpl-name" placeholder="e.g., Check VPN Health">
+      </div>
+      <div class="modal-field">
+        <label>Goal Template</label>
+        <textarea id="tmpl-goal" rows="4" placeholder="Use ::key:: for parameters, e.g.: Navigate to ::url:: and check ::service:: status" style="width:100%;padding:10px 12px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:8px;color:var(--text-primary);font-size:14px;resize:vertical;font-family:inherit;"></textarea>
+        <div style="font-size:11px;color:var(--text-tertiary);margin-top:4px;">Use ::parameter_name:: for placeholders that will be prompted at runtime</div>
+      </div>
+      <div class="modal-field">
+        <label>Parameters <span style="font-weight:400;color:var(--text-tertiary);">(auto-detected from goal)</span></label>
+        <div id="tmpl-params-container" style="display:flex;flex-direction:column;gap:8px;"></div>
+      </div>
+      <div class="modal-field">
+        <label>Tags <span style="font-weight:400;color:var(--text-tertiary);">(comma-separated)</span></label>
+        <input type="text" id="tmpl-tags" placeholder="e.g., vpn, network, daily">
+      </div>
+      <div class="modal-actions">
+        <button id="closeTemplateModalBtn" class="modal-btn btn-cancel">Cancel</button>
+        <button id="saveTemplateBtn" class="modal-btn btn-save">Save Template</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Run Template Modal -->
+  <div id="template-run-modal" class="modal">
+    <div class="modal-content" style="max-width:480px;">
+      <h2 id="template-run-title">Run Template</h2>
+      <div id="template-run-goal-preview" style="padding:10px;background:var(--bg-secondary);border-radius:8px;font-size:13px;color:var(--text-secondary);margin-bottom:16px;line-height:1.5;border:1px solid var(--border-color);"></div>
+      <div id="tmpl-run-params-container" style="display:flex;flex-direction:column;gap:12px;"></div>
+      <div class="modal-actions">
+        <button id="closeRunModalBtn" class="modal-btn btn-cancel">Cancel</button>
+        <button id="runTemplateBtn" class="modal-btn btn-save">Run</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- First-Run Onboarding Modal (3.12.0) -->
+  <div id="onboarding-modal" class="modal">
+    <div class="modal-content" style="max-width:520px;">
+      <div style="display:flex; align-items:center; gap:10px; margin-bottom:8px;">
+        <img src="icon-48.png" alt="" style="width:32px; height:32px;">
+        <h2 style="margin:0;">Welcome to Sentinel Override</h2>
+      </div>
+      <div id="onboardingStepIndicator" style="font-size:11px; color:var(--text-tertiary); margin-bottom:16px; letter-spacing:0.5px; text-transform:uppercase;">Step 1 of 4</div>
+
+      <div class="onboarding-step" data-step="1">
+        <p style="font-size:14px; line-height:1.6; margin:0 0 12px;">An MSP-focused browser agent that <b>plans</b>, <b>acts</b>, and <b>reports back</b>. Built for the techs in the trenches.</p>
+        <ul style="font-size:13px; line-height:1.7; padding-left:20px; margin:8px 0 16px;">
+          <li>Audit Entra sign-ins, run Exchange message traces, configure SonicWall VPN tunnels</li>
+          <li>Hard-block cross-tenant actions to prevent client mix-ups</li>
+          <li>Generate audit-ready reports with source-cited claims</li>
+          <li>Remember per-client knowledge that compounds across runs</li>
+        </ul>
+      </div>
+
+      <div class="onboarding-step" data-step="2" style="display:none;">
+        <h3 style="margin-top:0;">1. Pick an LLM provider</h3>
+        <p style="font-size:13px; line-height:1.6;">Click the <b>gear icon</b> (top right) → choose a provider from the catalog → paste your API key → click <b>Detect Models</b> → save.</p>
+        <div style="background:var(--bg-secondary); padding:10px; border-radius:6px; font-size:12px; line-height:1.6; margin:10px 0;">
+          <b>Recommended:</b><br>
+          • <b>Anthropic Claude</b> — best vision + reasoning, MSP-friendly<br>
+          • <b>OpenAI GPT-4.1 / GPT-5</b> — strong all-around<br>
+          • <b>Local: Ollama / LM Studio</b> — free, private, slower
+        </div>
+        <p style="font-size:12px; color:var(--text-tertiary);">16 providers in the catalog with auto-detect. Switch any time.</p>
+      </div>
+
+      <div class="onboarding-step" data-step="3" style="display:none;">
+        <h3 style="margin-top:0;">2. (Optional) Lock in the client tenant</h3>
+        <p style="font-size:13px; line-height:1.6;">For Microsoft 365 work, set <b>Expected Microsoft tenant</b> in Settings to your client's tenant (e.g., <code>acme.onmicrosoft.com</code>).</p>
+        <p style="font-size:13px; line-height:1.6;">The tenant chip in the header turns <span style="color:#4caf50;">green</span> when you're on the right tenant and <span style="color:#f44;">red</span> when you're not. Modifying actions get hard-blocked on the wrong tenant.</p>
+        <p style="font-size:12px; color:var(--text-tertiary);">For multi-client work, use the <b>Client</b> chip (header) to switch context per run — Sentinel injects per-client knowledge automatically.</p>
+      </div>
+
+      <div class="onboarding-step" data-step="4" style="display:none;">
+        <h3 style="margin-top:0;">3. Try a goal</h3>
+        <p style="font-size:13px; line-height:1.6;">Type a goal in plain English like:</p>
+        <div style="background:var(--bg-secondary); padding:10px; border-radius:6px; font-size:12px; font-family:monospace; line-height:1.5; margin:8px 0;">
+          "Run a message trace in Exchange admin center for sender alice@acme.com to recipient bob@acme.com in the last 24 hours and summarize findings."
+        </div>
+        <p style="font-size:13px; line-height:1.6;">Sentinel plans, executes, and produces an investigation report with source-cited claims. Export as PDF for ticket attachment.</p>
+        <p style="font-size:12px; color:var(--text-tertiary);">Welcome aboard.</p>
+      </div>
+
+      <div class="modal-actions" style="margin-top:20px; padding-top:12px; border-top:1px solid var(--border-color); display:flex; justify-content:space-between; align-items:center;">
+        <button id="onboardingSkipBtn" class="modal-btn btn-cancel" style="font-size:11px;">Skip tour</button>
+        <div style="display:flex; gap:8px;">
+          <button id="onboardingPrevBtn" class="modal-btn btn-cancel" style="display:none;">← Back</button>
+          <button id="onboardingNextBtn" class="modal-btn btn-save" style="background:var(--accent-primary); color:white; border-color:var(--accent-primary);">Next →</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Client Knowledge Modal (3.12.0) -->
+  <div id="client-modal" class="modal">
+    <div class="modal-content" style="max-width:560px; max-height:80vh; display:flex; flex-direction:column;">
+      <h2 style="margin-top:0;">Clients & Knowledge</h2>
+      <div style="font-size:12px; color:var(--text-secondary); margin-bottom:12px; line-height:1.5;">
+        Pick the client this run is for. Sentinel injects facts you have saved for that client into every step's prompt — site quirks, timing rules, custom paths, recurring errors. Knowledge compounds across runs.
+      </div>
+
+      <!-- Active client picker -->
+      <div style="margin-bottom:16px; padding:12px; background:var(--bg-secondary); border-radius:8px; border:1px solid var(--border-color);">
+        <div style="font-size:11px; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:6px;">Active client for next run</div>
+        <select id="clientActivePicker" style="width:100%; padding:8px 10px; background:var(--bg-input); border:1px solid var(--border-color); border-radius:6px; color:var(--text-primary); font-size:13px;">
+          <option value="">— No client (default behavior) —</option>
+        </select>
+      </div>
+
+      <!-- Add new client + manage -->
+      <div style="display:flex; gap:8px; margin-bottom:12px;">
+        <input type="text" id="clientNewNameInput" placeholder="New client name (e.g., Acme Corp)" style="flex:1; padding:8px 10px; background:var(--bg-input); border:1px solid var(--border-color); border-radius:6px; color:var(--text-primary); font-size:13px;">
+        <button id="clientAddBtn" class="small-btn" style="background:var(--accent-primary); color:white; border-color:var(--accent-primary);">+ Add</button>
+      </div>
+
+      <!-- Client list -->
+      <div id="clientList" style="flex:1; overflow-y:auto; min-height:120px; border-top:1px solid var(--border-color); padding-top:12px;">
+        <div style="text-align:center; color:var(--text-tertiary); font-size:13px; padding:24px;">No clients yet.</div>
+      </div>
+
+      <!-- Footer -->
+      <div class="modal-actions" style="margin-top:12px; padding-top:12px; border-top:1px solid var(--border-color);">
+        <button id="clientImportBtn" class="modal-btn btn-cancel" title="Import a client knowledge JSON file">Import…</button>
+        <button id="closeClientModalBtn" class="modal-btn btn-save">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Per-Client Detail Modal (3.12.0) — entries CRUD -->
+  <div id="client-detail-modal" class="modal">
+    <div class="modal-content" style="max-width:560px; max-height:80vh; display:flex; flex-direction:column;">
+      <h2 id="clientDetailTitle" style="margin-top:0;">Client</h2>
+      <div style="margin-bottom:12px; display:flex; gap:8px; align-items:center;">
+        <input type="text" id="clientDetailNameInput" style="flex:1; padding:6px 10px; background:var(--bg-input); border:1px solid var(--border-color); border-radius:6px; color:var(--text-primary); font-size:13px;" placeholder="Display name">
+        <input type="text" id="clientDetailTenantInput" style="flex:1; padding:6px 10px; background:var(--bg-input); border:1px solid var(--border-color); border-radius:6px; color:var(--text-primary); font-size:12px;" placeholder="Tenant (optional, e.g., acme.onmicrosoft.com)">
+        <button id="clientDetailSaveBtn" class="small-btn">Save</button>
+      </div>
+
+      <!-- Add entry -->
+      <div style="background:var(--bg-secondary); border:1px solid var(--border-color); border-radius:6px; padding:10px; margin-bottom:12px;">
+        <div style="font-size:11px; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:6px;">Add knowledge entry</div>
+        <textarea id="clientEntryWisdomInput" rows="2" placeholder="What did you learn? E.g., 'Their Entra has an auth proxy — wait 4s after navigation before clicking.'" style="width:100%; padding:8px; background:var(--bg-input); border:1px solid var(--border-color); border-radius:6px; color:var(--text-primary); font-size:13px; font-family:inherit; resize:vertical; box-sizing:border-box;"></textarea>
+        <div style="display:flex; gap:8px; align-items:center; margin-top:8px;">
+          <select id="clientEntryScopeSelect" style="padding:5px; background:var(--bg-input); border:1px solid var(--border-color); border-radius:4px; color:var(--text-primary); font-size:12px;">
+            <option value="global">Global (always apply)</option>
+            <option value="url">Only on URL pattern…</option>
+          </select>
+          <input type="text" id="clientEntryUrlPatternInput" placeholder="*.entra.microsoft.com" style="flex:1; padding:5px 8px; background:var(--bg-input); border:1px solid var(--border-color); border-radius:4px; color:var(--text-primary); font-size:12px; display:none;">
+          <button id="clientEntryAddBtn" class="small-btn" style="background:var(--accent-primary); color:white; border-color:var(--accent-primary);">+ Add entry</button>
+        </div>
+      </div>
+
+      <!-- Entries list -->
+      <div id="clientEntriesList" style="flex:1; overflow-y:auto; min-height:120px;">
+        <div style="text-align:center; color:var(--text-tertiary); font-size:13px; padding:24px;">No knowledge yet for this client.</div>
+      </div>
+
+      <div class="modal-actions" style="margin-top:12px; padding-top:12px; border-top:1px solid var(--border-color);">
+        <button id="clientDetailExportBtn" class="modal-btn btn-cancel" title="Export this client's knowledge as JSON for sharing with teammates">Export JSON…</button>
+        <button id="clientDetailDeleteBtn" class="modal-btn btn-cancel" style="color:var(--error-color);">Delete client</button>
+        <button id="closeClientDetailBtn" class="modal-btn btn-save">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Create/Edit Schedule Modal -->
+  <div id="schedule-modal" class="modal">
+    <div class="modal-content" style="max-width:480px;">
+      <h2 id="schedule-modal-title">New Schedule</h2>
+      <div class="modal-field">
+        <label>Name</label>
+        <input type="text" id="sch-name" placeholder="e.g., Daily VPN Health Check">
+      </div>
+      <div class="modal-field">
+        <label>Source</label>
+        <select id="sch-source-type" style="width:100%;padding:10px 12px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:8px;color:var(--text-primary);font-size:14px;">
+          <option value="template">From Template</option>
+          <option value="goal">Freeform Goal</option>
+        </select>
+      </div>
+      <div id="sch-template-field" class="modal-field">
+        <label>Template</label>
+        <select id="sch-template-id" style="width:100%;padding:10px 12px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:8px;color:var(--text-primary);font-size:14px;">
+          <option value="">Loading templates...</option>
+        </select>
+        <div id="sch-template-params" style="margin-top:8px;"></div>
+      </div>
+      <div id="sch-goal-field" class="modal-field" style="display:none;">
+        <label>Goal</label>
+        <textarea id="sch-goal" rows="3" placeholder="Describe what the agent should do..." style="width:100%;padding:10px 12px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:8px;color:var(--text-primary);font-size:14px;resize:vertical;font-family:inherit;"></textarea>
+      </div>
+      <div class="modal-field">
+        <label>Schedule Type</label>
+        <select id="sch-type" style="width:100%;padding:10px 12px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:8px;color:var(--text-primary);font-size:14px;">
+          <option value="once">Run Once</option>
+          <option value="recurring">Recurring</option>
+        </select>
+      </div>
+      <div id="sch-once-fields" class="modal-field">
+        <label>Date & Time</label>
+        <input type="datetime-local" id="sch-run-at" style="width:100%;padding:10px 12px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:8px;color:var(--text-primary);font-size:14px;">
+      </div>
+      <div id="sch-recurring-fields" style="display:none;">
+        <div class="modal-field">
+          <label>Repeat</label>
+          <select id="sch-interval" style="width:100%;padding:10px 12px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:8px;color:var(--text-primary);font-size:14px;">
+            <option value="daily">Daily</option>
+            <option value="weekly">Weekly</option>
+            <option value="custom">Custom Interval</option>
+          </select>
+        </div>
+        <div id="sch-weekly-days" class="modal-field" style="display:none;">
+          <label>Days of Week</label>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            <label style="display:flex;align-items:center;gap:4px;font-size:13px;color:var(--text-secondary);cursor:pointer;"><input type="checkbox" class="sch-day-check" value="1"> Mon</label>
+            <label style="display:flex;align-items:center;gap:4px;font-size:13px;color:var(--text-secondary);cursor:pointer;"><input type="checkbox" class="sch-day-check" value="2"> Tue</label>
+            <label style="display:flex;align-items:center;gap:4px;font-size:13px;color:var(--text-secondary);cursor:pointer;"><input type="checkbox" class="sch-day-check" value="3"> Wed</label>
+            <label style="display:flex;align-items:center;gap:4px;font-size:13px;color:var(--text-secondary);cursor:pointer;"><input type="checkbox" class="sch-day-check" value="4"> Thu</label>
+            <label style="display:flex;align-items:center;gap:4px;font-size:13px;color:var(--text-secondary);cursor:pointer;"><input type="checkbox" class="sch-day-check" value="5"> Fri</label>
+            <label style="display:flex;align-items:center;gap:4px;font-size:13px;color:var(--text-secondary);cursor:pointer;"><input type="checkbox" class="sch-day-check" value="6"> Sat</label>
+            <label style="display:flex;align-items:center;gap:4px;font-size:13px;color:var(--text-secondary);cursor:pointer;"><input type="checkbox" class="sch-day-check" value="0"> Sun</label>
+          </div>
+        </div>
+        <div id="sch-custom-interval" class="modal-field" style="display:none;">
+          <label>Every N minutes</label>
+          <input type="number" id="sch-period" min="30" step="30" value="60" style="width:100%;padding:10px 12px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:8px;color:var(--text-primary);font-size:14px;">
+          <div style="font-size:11px;color:var(--text-tertiary);margin-top:4px;">Minimum 30 minutes (Chrome alarm API limit)</div>
+        </div>
+        <div class="modal-field">
+          <label>Time of Day</label>
+          <input type="time" id="sch-time" style="width:100%;padding:10px 12px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:8px;color:var(--text-primary);font-size:14px;">
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button id="closeScheduleModalBtn" class="modal-btn btn-cancel">Cancel</button>
+        <button id="saveScheduleBtn" class="modal-btn btn-save">Create Schedule</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Run History Modal -->
+  <div id="schedule-history-modal" class="modal">
+    <div class="modal-content" style="max-width:520px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <h2 style="margin:0;">Run History</h2>
+        <button id="closeHistoryModalBtn" class="icon-btn" title="Close">&times;</button>
+      </div>
+      <div id="schedule-history-list"></div>
+    </div>
+  </div>
+
+  <!-- Recent Chats Modal (3.24.0) — restore past chat sessions -->
+  <div id="recent-chats-modal" class="modal">
+    <div class="modal-content" style="max-width:560px; max-height:80vh; display:flex; flex-direction:column;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+        <h2 style="margin:0;">Recent Chats</h2>
+        <button id="closeRecentChatsBtn" class="icon-btn" title="Close">&times;</button>
+      </div>
+      <div style="font-size:12px; color:var(--text-secondary); margin-bottom:12px; line-height:1.5;">
+        Last 10 chat sessions. Sessions are archived automatically when the side panel closes, when an agent run finishes, or before a new chat clears the screen. Restoring brings back messages, action cards, activity streams, and any final report — display-only (buttons inside historical cards aren't live).
+      </div>
+      <div id="recentChatsList" style="flex:1; overflow-y:auto; min-height:160px; border-top:1px solid var(--border-color); padding-top:8px;">
+        <div style="text-align:center; color:var(--text-tertiary); font-size:13px; padding:24px;">Loading…</div>
+      </div>
+      <div class="modal-actions" style="margin-top:12px; padding-top:12px; border-top:1px solid var(--border-color); display:flex; justify-content:space-between; align-items:center;">
+        <button id="recentChatsClearBtn" class="modal-btn btn-cancel" style="color:var(--error-color);" title="Delete all archived chats">Clear All</button>
+        <button id="closeRecentChatsBtn2" class="modal-btn btn-save">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Paste Ticket Modal — structured ticket import that assembles a goal string -->
+  <div id="paste-ticket-modal" class="modal">
+    <div class="modal-content" style="max-width:480px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        <h2 style="margin:0;">Paste Ticket</h2>
+        <button id="closePasteTicketBtn" class="icon-btn" title="Close">&times;</button>
+      </div>
+      <div class="modal-field">
+        <label for="ptTicketNumber">Ticket # <span style="color:var(--text-tertiary);font-weight:400;">(optional)</span></label>
+        <input type="text" id="ptTicketNumber" placeholder="e.g. 1129537" style="width:100%;box-sizing:border-box;">
+      </div>
+      <div class="modal-field">
+        <label for="ptClient">Client / Company</label>
+        <input type="text" id="ptClient" placeholder="e.g. Acme Corp" style="width:100%;box-sizing:border-box;">
+      </div>
+      <div class="modal-field">
+        <label for="ptIssue">Issue description</label>
+        <textarea id="ptIssue" rows="3" placeholder="What is the problem the user is experiencing?" style="width:100%;box-sizing:border-box;resize:vertical;"></textarea>
+      </div>
+      <div class="modal-field">
+        <label for="ptPriorAttempts">Prior attempts <span style="color:var(--text-tertiary);font-weight:400;">(optional)</span></label>
+        <textarea id="ptPriorAttempts" rows="2" placeholder="What has already been tried?" style="width:100%;box-sizing:border-box;resize:vertical;"></textarea>
+      </div>
+      <div class="modal-field">
+        <label for="ptTargetSystem">Target system / URL <span style="color:var(--text-tertiary);font-weight:400;">(optional)</span></label>
+        <input type="text" id="ptTargetSystem" placeholder="e.g. admin.microsoft.com or SonicWall at 192.168.1.1" style="width:100%;box-sizing:border-box;">
+      </div>
+      <div class="modal-field">
+        <label for="ptSuccessCriteria">Success criteria <span style="color:var(--text-tertiary);font-weight:400;">(optional)</span></label>
+        <input type="text" id="ptSuccessCriteria" placeholder="e.g. User can send email, firewall rule is active" style="width:100%;box-sizing:border-box;">
+      </div>
+      <div class="modal-actions" style="margin-top:20px;">
+        <button id="closePasteTicketBtnCancel" class="modal-btn btn-cancel">Cancel</button>
+        <button id="usePasteTicketBtn" class="modal-btn btn-save">Use Ticket</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Run Log History Modal (3.14.0) — browse and re-export past forensic run logs -->
+  <div id="run-log-history-modal" class="modal">
+    <div class="modal-content" style="max-width:560px; max-height:80vh; display:flex; flex-direction:column;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+        <h2 style="margin:0;">Run Log History</h2>
+        <button id="closeRunLogHistoryBtn" class="icon-btn" title="Close">&times;</button>
+      </div>
+      <div style="font-size:12px; color:var(--text-secondary); margin-bottom:12px; line-height:1.5;">
+        Forensic run logs (last 20 runs). Each row captures every click, type, navigate, and JS execution with a timestamp and screenshot hash — exportable for ticket attachments and HR/compliance review.
+      </div>
+      <div id="runLogHistoryList" style="flex:1; overflow-y:auto; min-height:160px; border-top:1px solid var(--border-color); padding-top:8px;">
+        <div style="text-align:center; color:var(--text-tertiary); font-size:13px; padding:24px;">Loading…</div>
+      </div>
+      <div class="modal-actions" style="margin-top:12px; padding-top:12px; border-top:1px solid var(--border-color); display:flex; justify-content:space-between; align-items:center;">
+        <button id="runLogHistoryClearBtn" class="modal-btn btn-cancel" style="color:var(--error-color);" title="Delete all stored run logs">Clear All</button>
+        <button id="closeRunLogHistoryBtn2" class="modal-btn btn-save">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Hidden Elements -->
+  <input type="file" id="file-input" multiple>
+
+  <!-- Import Preview Modal -->
+  <div id="import-modal" class="modal">
+    <div class="modal-content" style="max-width:520px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <h2 style="margin:0;">Import Templates</h2>
+        <button id="closeImportModalBtn" class="icon-btn" title="Close">&times;</button>
+      </div>
+      <div id="import-version-warning" style="display:none;margin-bottom:12px;"></div>
+      <div id="import-preview-list" style="max-height:300px;overflow-y:auto;margin-bottom:16px;"></div>
+      <div class="modal-field">
+        <label>If a template with the same name already exists:</label>
+        <div style="display:flex;flex-direction:column;gap:8px;margin-top:6px;">
+          <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text-secondary);cursor:pointer;">
+            <input type="radio" name="import-conflict" value="skip" checked> Skip (keep existing)
+          </label>
+          <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text-secondary);cursor:pointer;">
+            <input type="radio" name="import-conflict" value="rename"> Rename (import with new name)
+          </label>
+          <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text-secondary);cursor:pointer;">
+            <input type="radio" name="import-conflict" value="overwrite"> Overwrite (replace existing)
+          </label>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button id="importConfirmBtn" class="modal-btn btn-save">Import</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Global error catcher — external file to satisfy MV3 CSP -->
+  <script src="popup-modules/boot-catcher.js"></script>
+  <script src="popup-modules/popup-state.js"></script>
+  <script src="lib/marked.min.js"></script>
+  <script src="popup-modules/helpers.js"></script>
+  <script src="popup-modules/ui-common.js"></script>
+  <script src="popup-modules/settings.js"></script>
+  <script src="popup-modules/chat.js"></script>
+  <script src="popup-modules/templates.js"></script>
+  <script src="popup-modules/client-knowledge.js"></script>
+  <script src="popup-modules/onboarding.js"></script>
+  <script src="popup-modules/scheduler-ui.js"></script>
+  <script src="popup-modules/collaboration.js"></script>
+  <script src="popup-modules/modal-drag.js"></script>
+  <script src="popup-modules/recent-chats.js"></script>
+  <script src="popup-modules/telemetry-panel.js"></script>
+  <script src="popup-full.js"></script>
+</body>
+</html>

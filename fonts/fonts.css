@@ -1,0 +1,74 @@
+/* Local bundled fonts — Inter and Space Grotesk */
+/* Replaces Google Fonts CDN to eliminate network dependency */
+
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 300;
+  font-display: swap;
+  src: url('inter-300.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('inter-400.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('inter-500.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('inter-600.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('inter-700.ttf') format('truetype');
+}
+
+@font-face {
+  font-family: 'Space Grotesk';
+  font-style: normal;
+  font-weight: 300;
+  font-display: swap;
+  src: url('space-grotesk-300.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Space Grotesk';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('space-grotesk-400.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Space Grotesk';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('space-grotesk-500.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Space Grotesk';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('space-grotesk-600.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Space Grotesk';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('space-grotesk-700.ttf') format('truetype');
+}

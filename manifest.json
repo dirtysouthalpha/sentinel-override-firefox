@@ -1,0 +1,127 @@
+{
+  "manifest_version": 3,
+  "name": "Sentinel Override",
+  "version": "20.6.2",
+  "description": "Universal browser automation agent — investigates, configures, and collaborates via Universal Agent Protocol",
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; style-src 'self' 'unsafe-inline'"
+  },
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "tabs",
+    "storage",
+    "webNavigation",
+    "alarms",
+    "notifications",
+    "downloads",
+    "contextMenus"
+  ],
+  "action": {
+    "default_title": "Sentinel Override",
+    "default_icon": {
+      "16": "icon-16.png",
+      "32": "icon-32.png",
+      "48": "icon-48.png",
+      "128": "icon-128.png"
+    }
+  },
+  "icons": {
+    "16": "icon-16.png",
+    "32": "icon-32.png",
+    "48": "icon-48.png",
+    "128": "icon-128.png",
+    "256": "icon-256.png"
+  },
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content/shadow-intercept.js"],
+      "run_at": "document_start",
+      "all_frames": true,
+      "world": "MAIN"
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["compat/content-shim.js", "content/warm-scan.js"],
+      "run_at": "document_start",
+      "all_frames": true
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": [
+        "compat/content-shim.js",
+        "content/dom-utils.js",
+        "content/highlight.js",
+        "content/wait-utils.js",
+        "content/dropdown-utils.js",
+        "content/special-inputs.js",
+        "content/overlay-detector.js",
+        "content/frame-manager.js",
+        "content/shadow-dom.js",
+        "content/action-hud.js",
+        "content/cursor.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": true
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["compat/content-shim.js", "content/index.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["compat/content-shim.js", "content/quick-assist.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "commands": {
+    "toggle-agent": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+Space"
+      },
+      "description": "Toggle agent start/stop"
+    },
+    "pause-agent": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+P"
+      },
+      "description": "Pause/resume running agent"
+    },
+    "turbo-mode": {
+      "description": "Set speed to turbo (fast, no human-like delays)"
+    },
+    "normal-mode": {
+      "description": "Set speed to normal (human-like delays)"
+    },
+    "stealth-mode": {
+      "description": "Set speed to stealth (slow, maximum human-like randomness)"
+    }
+  },
+  "background": {
+    "scripts": ["compat/firefox-entry.js"],
+    "type": "module"
+  },
+  "sidebar_action": {
+    "default_title": "Sentinel Override",
+    "default_panel": "popup.html",
+    "default_icon": {
+      "16": "icon-16.png",
+      "32": "icon-32.png",
+      "48": "icon-48.png",
+      "128": "icon-128.png"
+    }
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "sentinel-override@dirtysouthalpha.com",
+      "strict_min_version": "128.0"
+    }
+  }
+}
