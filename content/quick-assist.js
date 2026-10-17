@@ -555,6 +555,26 @@ ${selectedText}`;
     }
   }
 
+
+  // Simple HTML sanitizer for AI-generated content
+  function sanitizeHTML(html) {
+    const div = document.createElement('div');
+    div.innerHTML = html;
+    const scripts = div.querySelectorAll('script');
+    scripts.forEach(s => s.remove());
+    const allElements = div.querySelectorAll('*');
+    allElements.forEach(el => {
+      el.removeAttribute('onerror');
+      el.removeAttribute('onclick');
+      el.removeAttribute('onload');
+      el.removeAttribute('onmouseover');
+      if (el.tagName === 'A' && el.href && el.href.startsWith('javascript:')) {
+        el.removeAttribute('href');
+      }
+    });
+    return div.innerHTML;
+  }
+
   function setResponseLoading() {
     if (!shadow) return;
     var area = shadow.querySelector('#qa-response-area');
@@ -568,14 +588,14 @@ ${selectedText}`;
     if (!shadow) return;
     var area = shadow.querySelector('#qa-response-area');
     if (!area) return;
-    area.innerHTML = `<div class="qa-response">${renderMarkdown(text)}</div>`;
+    area.innerHTML = `<div class="qa-response">${sanitizeHTML(renderMarkdown(text))}</div>`;
   }
 
   function setResponseHTML(html) {
     if (!shadow) return;
     var area = shadow.querySelector('#qa-response-area');
     if (!area) return;
-    area.innerHTML = `<div class="qa-response">${html}</div>`;
+    area.innerHTML = `<div class="qa-response">${sanitizeHTML(html)}</div>`;
   }
 
   function copyResponse() {
@@ -689,7 +709,7 @@ ${selectedText}`;
   });
 
   // Click outside panel → close
-  document.addEventListener('mousedown', function(e) {
+  const __sentinelQaMouseDown = function(e) {
     if (!panel) return;
     if (panel.contains(e.target)) return;
     // Small delay to not conflict with trigger click
@@ -698,15 +718,15 @@ ${selectedText}`;
         hidePanel();
       }
     }, 200);
-  });
+  };
 
   // Escape key → close
-  document.addEventListener('keydown', function(e) {
+  const __sentinelQaKeyDown = function(e) {
     if (e.key === 'Escape') {
       if (panel) { hidePanel(); e.preventDefault(); }
       else if (triggerBtn) { hideTrigger(); }
     }
-  });
+  };
 
   // Messages from background (context menu trigger)
   chrome.runtime.onMessage.addListener(function(msg, sender, sendResponse) {
@@ -745,3 +765,9 @@ ${selectedText}`;
   }
 
 })();
+
+  // Cleanup document event listeners on page unload
+  window.addEventListener('pagehide', () => {
+    document.removeEventListener('mousedown', __sentinelQaMouseDown);
+    document.removeEventListener('keydown', __sentinelQaKeyDown);
+  });

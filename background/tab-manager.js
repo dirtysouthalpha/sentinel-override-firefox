@@ -1135,7 +1135,8 @@ export async function takeScreenshot(tabId, windowId, currentUrl, screenshotCach
     try { await ensureObservabilityListeners(tabId); } catch (e) { console.warn('[Sentinel/tab-manager] ensureObservabilityListeners failed:', getErrorMessage(e)); }
     const screenshotResult = await chrome.debugger.sendCommand({ tabId }, 'Page.captureScreenshot', { format: 'jpeg', quality: CONFIG.screenshotQuality });
     base64Image = (screenshotResult && typeof screenshotResult.data === 'string') ? screenshotResult.data : null;
-  } catch {
+  } catch (e) {
+    console.warn('[Sentinel] debugger attach failed', e);
     // Attachment or capture failed — drop our tracking, attempt a clean detach,
     // then fall back to captureVisibleTab.
     attachedDebuggees.delete(tabId);

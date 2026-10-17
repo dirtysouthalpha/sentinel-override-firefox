@@ -27,7 +27,7 @@ window.__sentinelUtils.dropdown = window.__sentinelUtils.dropdown || {};
     if (!triggerEl) return null;
 
     // Scroll trigger into view before clicking
-    try { triggerEl.scrollIntoView({ behavior: 'instant', block: 'center' }); } catch { /* detached node */ }
+    try { triggerEl.scrollIntoView({ behavior: 'instant', block: 'center' }); } catch (e) { console.warn('[Sentinel] scrollIntoView failed:', e); }
 
     // Dispatch full mouse sequence consistent with existing click pattern
     const view = doc.defaultView;
@@ -37,7 +37,7 @@ window.__sentinelUtils.dropdown = window.__sentinelUtils.dropdown || {};
       triggerEl.dispatchEvent(new MouseEvent('mouseup', mouseOpts));
       triggerEl.click();
       triggerEl.dispatchEvent(new MouseEvent('mouseout', mouseOpts));
-    } catch { /* dispatch may fail on detached elements */ }
+    } catch (e) { console.warn('[Sentinel] mouse event dispatch failed:', e); }
 
     // Poll for option elements to appear (100ms interval, 3s timeout)
     const POLL_INTERVAL = 100;
@@ -85,7 +85,7 @@ window.__sentinelUtils.dropdown = window.__sentinelUtils.dropdown || {};
         if (typeof items.forEach === 'function') {
           items.forEach(addUnique);
         }
-      } catch { /* invalid selector */ }
+      } catch (e) { console.warn('[Sentinel] querySelectorAll failed:', e); }
     }
 
     // ===== Scoped lookup (#22) =====
@@ -159,7 +159,7 @@ window.__sentinelUtils.dropdown = window.__sentinelUtils.dropdown || {};
         if (typeof found.forEach === 'function') {
           found.forEach(addAllFromContainer);
         }
-      } catch { /* invalid selector */ }
+      } catch (e) { console.warn('[Sentinel] querySelectorAll failed:', e); }
     }
 
     // 4. Siblings/children of trigger
@@ -284,7 +284,7 @@ window.__sentinelUtils.dropdown = window.__sentinelUtils.dropdown || {};
     if (!matchedEl) return null;
 
     // Scroll option into view and click
-    try { matchedEl.scrollIntoView({ behavior: 'instant', block: 'center' }); } catch { /* detached */ }
+    try { matchedEl.scrollIntoView({ behavior: 'instant', block: 'center' }); } catch (e) { console.warn('[Sentinel] scrollIntoView failed:', e); }
     const view = doc.defaultView;
     const mouseOpts = { bubbles: true, cancelable: true, composed: true, view: view };
     try {
@@ -292,7 +292,7 @@ window.__sentinelUtils.dropdown = window.__sentinelUtils.dropdown || {};
       matchedEl.dispatchEvent(new MouseEvent('mouseup', mouseOpts));
       matchedEl.click();
       matchedEl.dispatchEvent(new MouseEvent('mouseout', mouseOpts));
-    } catch { /* dispatch may fail on detached elements */ }
+    } catch (e) { console.warn('[Sentinel] mouse event dispatch failed:', e); }
 
     return matchedEl;
   };
@@ -332,23 +332,23 @@ window.__sentinelUtils.dropdown = window.__sentinelUtils.dropdown || {};
 
       if (isLastLevel) {
         // Final item: click it
-        try { matchedItem.scrollIntoView({ behavior: 'instant', block: 'center' }); } catch { /* detached */ }
+        try { matchedItem.scrollIntoView({ behavior: 'instant', block: 'center' }); } catch (e) { console.warn('[Sentinel] scrollIntoView failed:', e); }
         const mouseOpts = { bubbles: true, cancelable: true, composed: true, view: view };
         try {
           matchedItem.dispatchEvent(new MouseEvent('mousedown', mouseOpts));
           matchedItem.dispatchEvent(new MouseEvent('mouseup', mouseOpts));
           matchedItem.click();
           matchedItem.dispatchEvent(new MouseEvent('mouseout', mouseOpts));
-        } catch { /* dispatch may fail */ }
+        } catch (e) { console.warn('[Sentinel] mouse event dispatch failed:', e); }
         return matchedItem;
       }
 
       // Not the last level: hover to reveal submenu
-      try { matchedItem.scrollIntoView({ behavior: 'instant', block: 'center' }); } catch { /* detached */ }
+      try { matchedItem.scrollIntoView({ behavior: 'instant', block: 'center' }); } catch (e) { console.warn('[Sentinel] scrollIntoView failed:', e); }
       try {
         matchedItem.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true, composed: true, view: view }));
         matchedItem.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true, composed: true }));
-      } catch { /* dispatch may fail */ }
+      } catch (e) { console.warn('[Sentinel] mouse event dispatch failed:', e); }
 
       // Wait for submenu to appear (300ms hover delay, up to 500ms total)
       if (wait.sleep) await wait.sleep(300);
@@ -361,7 +361,7 @@ window.__sentinelUtils.dropdown = window.__sentinelUtils.dropdown || {};
           matchedItem.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, composed: true, view: view }));
           matchedItem.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, composed: true, view: view }));
           matchedItem.click();
-        } catch { /* dispatch may fail */ }
+        } catch (e) { console.warn('[Sentinel] mouse event dispatch failed:', e); }
         if (wait.sleep) await wait.sleep(200);
 
         // Check again after click
@@ -412,7 +412,7 @@ window.__sentinelUtils.dropdown = window.__sentinelUtils.dropdown || {};
         );
         if (childContainers.length) return true;
       }
-    } catch { /* querySelectorAll may fail on detached elements */ }
+    } catch (e) { console.warn('[Sentinel] querySelectorAll failed:', e); }
 
     return false;
   };
@@ -450,7 +450,7 @@ window.__sentinelUtils.dropdown = window.__sentinelUtils.dropdown || {};
       activeEl.dispatchEvent(new KeyboardEvent('keydown', escOpts));
       activeEl.dispatchEvent(new KeyboardEvent('keypress', escOpts));
       activeEl.dispatchEvent(new KeyboardEvent('keyup', escOpts));
-    } catch { /* dispatch may fail */ }
+    } catch (e) { console.warn('[Sentinel] mouse event dispatch failed:', e); }
 
     return wasOpen;
   };
@@ -467,7 +467,7 @@ window.__sentinelUtils.dropdown = window.__sentinelUtils.dropdown || {};
           const searchInput = container.querySelector('input[type="text"], input[type="search"], input[placeholder*="search" i], input[placeholder*="filter" i]');
           if (searchInput) return searchInput;
         }
-      } catch { /* closest may fail on detached elements */ }
+      } catch (e) { console.warn('[Sentinel] closest failed:', e); }
     }
 
     // Look for any visible search input that appeared recently

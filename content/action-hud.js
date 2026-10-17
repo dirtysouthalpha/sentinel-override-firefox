@@ -155,7 +155,7 @@ window.__sentinelUtils = window.__sentinelUtils || {};
       style.id = HUD_STYLE_ID;
       style.textContent = HUD_CSS;
       (document.head || document.documentElement).appendChild(style);
-    } catch { /* non-fatal */ }
+    } catch (e) { console.warn('[Sentinel] action-hud operation failed:', e); }
   }
 
   function ensureHUD() {
@@ -167,6 +167,7 @@ window.__sentinelUtils = window.__sentinelUtils || {};
       el = document.createElement('div');
       el.id = HUD_ID;
       el.setAttribute('data-sentinel', 'action-hud');
+      // Static template - safe: no user-controlled content
       el.innerHTML = `
         <div class="hud-card">
           <div class="hud-header">
@@ -212,6 +213,7 @@ window.__sentinelUtils = window.__sentinelUtils || {};
       // Update action icon + text
       const iconEl = el.querySelector('.hud-action-icon');
       const textEl = el.querySelector('.hud-action-text');
+      // Static icon SVG - safe: getIcon returns predefined constants
       if (iconEl) iconEl.innerHTML = getIcon(currentAction);
       if (textEl && opts.actionLabel) textEl.textContent = opts.actionLabel;
 
@@ -252,14 +254,14 @@ window.__sentinelUtils = window.__sentinelUtils || {};
 
       // Make visible
       el.classList.add('visible');
-    } catch { /* non-fatal */ }
+    } catch (e) { console.warn('[Sentinel] action-hud operation failed:', e); }
   }
 
   function hideHUD() {
     try {
       const el = document.getElementById(HUD_ID);
       if (el) el.classList.remove('visible');
-    } catch { /* non-fatal */ }
+    } catch (e) { console.warn('[Sentinel] action-hud operation failed:', e); }
   }
 
   // ── Public API ──

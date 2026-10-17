@@ -25,7 +25,7 @@ window.__sentinelUtils.highlight = window.__sentinelUtils.highlight || {};
         }`;
       // Append to head if available, else documentElement
       (document.head || document.documentElement).appendChild(style);
-    } catch { /* non-fatal */ }
+    } catch (e) { console.warn('[Sentinel] highlight style injection failed:', e); }
   }
 
   /**

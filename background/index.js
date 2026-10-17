@@ -30,7 +30,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
   const nv = changes.pending_goal.newValue;
   if (!nv || nv.done || (Date.now() - (nv.ts || 0)) > 120000) return;
   (async () => {
-    try { await chrome.storage.local.set({ pending_goal: Object.assign({}, nv, { done: true }) }); } catch (e) {}
+    try { await chrome.storage.local.set({ pending_goal: Object.assign({}, nv, { done: true }) }); } catch (e) { console.warn('[Sentinel] pending_goal storage failed:', e); }
     if (agentRunning) return; // direct message path won the race — run underway
 
     try {
@@ -143,9 +143,7 @@ initScheduler();
         await chrome.storage.session.remove(['agentRunning', 'agentGoal', 'agentStartTime']);
       }
     }
-  } catch (e) {
-
-  }
+  } catch (e) { console.warn('[Sentinel] session cleanup failed:', e); }
 })();
 
 // ========== Context Menu Click Handler (v3.44) ==========
@@ -1216,18 +1214,17 @@ if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onSuspend)
     // Detach all debugger connections to prevent port conflicts
     try {
       detachAllDebuggees().catch((e) => {
+        console.warn('[Sentinel] detachAllDebuggees catch failed', e);
 
       });
-    } catch (e) {
-
-    }
+    } catch (e) { console.warn('[Sentinel] detachAllDebuggees failed:', e); }
 
     // Stop all keepalive intervals
     try {
       stopSwKeepalive('default');
       stopSwKeepalive('agent-loop');
     } catch (e) {
-
+      console.warn('[Sentinel] stopSwKeepalive catch failed', e);
     }
   });
 }

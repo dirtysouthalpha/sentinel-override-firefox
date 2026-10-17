@@ -509,6 +509,7 @@ class UAPServer {
 
       return payload.exp > now;
     } catch {
+      console.warn('[Sentinel] token validation failed', e);
       return false;
     }
   }

@@ -21,7 +21,7 @@ window.__sentinelContentAlive = true;
 // (CSH-01) Top-level error boundary — reports uncaught content script errors
 // to the background service worker so they appear in telemetry/logs instead
 // of silently vanishing in the content script context.
-window.addEventListener('error', (event) => {
+const __sentinelErrorHandler = (event) => {
   try {
     if (window.__sentinelNoopThrow === true) {
       // (SO-71) benign: this is the second-pass injection guard aborting itself.
@@ -42,9 +42,9 @@ window.addEventListener('error', (event) => {
       }
     }).catch(() => {});
   } catch (_e) { /* truly non-fatal */ }
-});
+};
 
-window.addEventListener('unhandledrejection', (event) => {
+const __sentinelRejectionHandler = (event) => {
   try {
     chrome.runtime.sendMessage({
       action: 'content_telemetry_event',
@@ -54,7 +54,7 @@ window.addEventListener('unhandledrejection', (event) => {
       payload: { reason: String(event.reason || '') }
     }).catch(() => {});
   } catch (_e) {}
-});
+};
 //
 // (3.26.0) Content-side telemetry helper — fires `content_telemetry_event`
 // messages to the background, which re-emits via tel.emit() (telemetry.js).
@@ -650,6 +650,7 @@ if (window.__sentinelInitialized) {
           }
           return { content: `Iframe Title: ${title}\nURL: ${url}\n\n${content}` };
         } catch {
+          console.warn('[Sentinel] iframe content extraction failed', e);
           throw new Error('Cross-origin iframe -- use background routing');
         }
       }
@@ -2907,12 +2908,12 @@ if (window.__sentinelInitialized) {
       }
     };
 
-    window.addEventListener('popstate', () => {
+    const __sentinelPopstateHandler = () => {
       if (window.location.href !== lastUrl) {
         lastUrl = window.location.href;
         dispatchSPATransition(lastUrl);
       }
-    });
+    };
 
     // Cleanup on page unload to prevent memory leaks
     const cleanupObservers = () => {

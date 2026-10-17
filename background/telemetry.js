@@ -165,7 +165,8 @@ function _redactEvent(event) {
       message: _redactString(event.message),
       payload: _redactValue(event.payload, null)
     };
-  } catch {
+  } catch (e) {
+    console.warn('[Sentinel] redaction failed, returning original event', e);
     // If redaction throws, fail open with the original event rather than
     // dropping telemetry entirely — visibility is the whole point of the panel.
     return event;
