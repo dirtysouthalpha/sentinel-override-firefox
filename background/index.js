@@ -218,6 +218,8 @@ try {
 // for cross-origin iframe routing.
 addFrameRouterListeners();
 
+// ========== Content Script Auto-Injection Fallback ==========// Manifest content_scripts may fail to auto-inject on some Firefox versions.chrome.webNavigation.onCompleted.addListener(async (details) => {  if (details.frameId !== 0) return;  if (!details.tabId || details.tabId < 0) return;  const url = details.url || "";  if (!url || url.startsWith("chrome://") || url.startsWith("moz-extension://") || url.startsWith("about:") || url.startsWith("devtools://")) return;  try {    const alreadyAlive = await chrome.scripting.executeScript({      target: { tabId: details.tabId },      func: () => !!(window.__sentinelContentAlive === true)    });    if (alreadyAlive && alreadyAlive[0] && alreadyAlive[0].result === true) return;    await chrome.scripting.executeScript({      target: { tabId: details.tabId },      files: ["content/dom-utils.js", "content/highlight.js", "content/wait-utils.js", "content/dropdown-utils.js", "content/special-inputs.js", "content/overlay-detector.js", "content/frame-manager.js", "content/shadow-dom.js", "content/action-hud.js", "content/cursor.js", "content/index.js", "content/warm-scan.js", "content/quick-assist.js"]    });  } catch { /* tab may not be injectable yet */ }}, { url: [{ schemes: ["http", "https"] }] });
+
 // Schedule alarm listener + SW heartbeat
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   // v10.3.1: Heartbeat diagnostic
