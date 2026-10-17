@@ -12,6 +12,11 @@ import { FIVE_HUNDRED_MS, ONE_MINUTE_MS, FIVE_MINUTES_MS, ONE_HOUR_MS } from './
 import { tel } from './telemetry.js';
 import { getErrorMessage } from './error-utils.js';
 
+// H-5: Mutex to prevent TOCTOU race on agentRunning check.
+// Set to true before checking agentRunning, cleared after startAgent completes.
+// This prevents concurrent scheduled tasks from both passing the check.
+let _agentStartLock = false;
+
 // ========== Storage Constants ==========
 const SCHEDULES_KEY = 'sentinel_schedules';
 const RESULTS_KEY = 'sentinel_schedule_results';
@@ -505,8 +510,9 @@ export async function executeScheduledTask(alarmName) {
     return;
   }
 
-  if (AgentEngine.agentRunning) {
-    tel.info('scheduler', `Agent busy, skipping schedule ${schedule.name}`);
+  // H-5: Acquire mutex before checking agentRunning to prevent TOCTOU race
+  if (_agentStartLock) {
+    tel.info('scheduler', `Agent start already in progress, skipping schedule ${schedule.name}`);
     schedule.lastRunStatus = 'skipped';
     schedule.lastRunAt = Date.now();
     if (schedule.type === 'recurring' && schedule.recurrence) {
@@ -519,6 +525,23 @@ export async function executeScheduledTask(alarmName) {
     }
     return;
   }
+  _agentStartLock = true;
+
+  try {
+    if (AgentEngine.agentRunning) {
+      tel.info('scheduler', `Agent busy, skipping schedule ${schedule.name}`);
+      schedule.lastRunStatus = 'skipped';
+      schedule.lastRunAt = Date.now();
+      if (schedule.type === 'recurring' && schedule.recurrence) {
+        schedule.nextRunAt = computeNextRun(schedule.recurrence);
+      }
+      schedules[scheduleId] = schedule;
+      await saveSchedules(schedules);
+      if (schedule.type === 'recurring' && schedule.recurrence) {
+        registerAlarm(schedule);
+      }
+      return;
+    }
 
   const resultId = crypto.randomUUID();
   const startedAt = Date.now();
@@ -563,6 +586,9 @@ export async function executeScheduledTask(alarmName) {
     console.error('Failed to start agent:', getErrorMessage(err));
     await _handleTaskFailure(schedule, scheduleId, schedules, { id: resultId, startedAt, error: `Agent start failed: ${getErrorMessage(err)}` });
     return;
+  } finally {
+    // H-5: Release mutex after startAgent completes (success or failure)
+    _agentStartLock = false;
   }
 
   const completionResult = await completionPromise;

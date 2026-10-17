@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Sentinel Override",
   "version": "20.6.2",
-  "description": "Universal browser automation agent — investigates, configures, and collaborates via Universal Agent Protocol",
+  "description": "Universal browser automation agent \u2014 investigates, configures, and collaborates via Universal Agent Protocol",
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'self'; style-src 'self' 'unsafe-inline'"
   },
@@ -39,20 +39,31 @@
   ],
   "content_scripts": [
     {
-      "matches": ["<all_urls>"],
-      "js": ["content/shadow-intercept.js"],
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content/shadow-intercept.js"
+      ],
       "run_at": "document_start",
       "all_frames": true,
       "world": "MAIN"
     },
     {
-      "matches": ["<all_urls>"],
-      "js": ["compat/content-shim.js", "content/warm-scan.js"],
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "compat/content-shim.js",
+        "content/warm-scan.js"
+      ],
       "run_at": "document_start",
       "all_frames": true
     },
     {
-      "matches": ["<all_urls>"],
+      "matches": [
+        "<all_urls>"
+      ],
       "js": [
         "compat/content-shim.js",
         "content/dom-utils.js",
@@ -70,14 +81,24 @@
       "all_frames": true
     },
     {
-      "matches": ["<all_urls>"],
-      "js": ["compat/content-shim.js", "content/index.js"],
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "compat/content-shim.js",
+        "content/index.js"
+      ],
       "run_at": "document_idle",
       "all_frames": false
     },
     {
-      "matches": ["<all_urls>"],
-      "js": ["compat/content-shim.js", "content/quick-assist.js"],
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "compat/content-shim.js",
+        "content/quick-assist.js"
+      ],
       "run_at": "document_idle",
       "all_frames": false
     }
@@ -106,7 +127,9 @@
     }
   },
   "background": {
-    "scripts": ["compat/firefox-entry.js"],
+    "scripts": [
+      "compat/firefox-entry.js"
+    ],
     "type": "module"
   },
   "sidebar_action": {
@@ -124,5 +147,11 @@
       "id": "sentinel-override@dirtysouthalpha.com",
       "strict_min_version": "128.0"
     }
+  },
+  "externally_connectable": {
+    "matches": [
+      "http://localhost:*/*",
+      "http://127.0.0.1:*/*"
+    ]
   }
 }

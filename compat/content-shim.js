@@ -10,7 +10,7 @@
     var probe;
     try { probe = chrome.runtime.sendMessage({ action: 'ping' }); } catch (_e) { probe = undefined; }
     if (probe && typeof probe.then === 'function') return; // promise-style already
-    ['runtime', 'storage', 'tabs'].forEach(function (ns) {
+    ['runtime', 'storage', 'tabs', 'scripting', 'action', 'alarms', 'contextMenus', 'downloads', 'webNavigation', 'windows', 'notifications', 'commands'].forEach(function (ns) {
       if (browser[ns]) { try { chrome[ns] = browser[ns]; } catch (_e) { /* skip */ } }
     });
   } catch (_e) { /* never break the host page */ }

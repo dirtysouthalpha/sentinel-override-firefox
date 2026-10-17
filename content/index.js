@@ -2915,7 +2915,7 @@ if (window.__sentinelInitialized) {
     });
 
     // Cleanup on page unload to prevent memory leaks
-    window.addEventListener('beforeunload', () => {
+    const cleanupObservers = () => {
       if (domObserver) {
         domObserver.disconnect();
         domObserver = null;
@@ -2928,7 +2928,10 @@ if (window.__sentinelInitialized) {
         clearTimeout(spaDebounce);
         spaDebounce = null;
       }
-    });
+    };
+    window.addEventListener('beforeunload', cleanupObservers);
+    // pagehide is more reliable than beforeunload in extension contexts
+    window.addEventListener('pagehide', cleanupObservers);
   }
 
   setupSPAObservers();

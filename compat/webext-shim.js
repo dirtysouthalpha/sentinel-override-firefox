@@ -29,6 +29,12 @@ export function makeFakeDebugger(browser) {
   const pendingPress = new Map();      // tabId -> {x, y, button, clickCount}
   const lastMove = new Map();          // tabId -> {x, y}
 
+  // H-1/H-2: Clean up pending press/move state when tabs are closed to prevent memory leaks.
+  browser.tabs.onRemoved.addListener((tabId) => {
+    pendingPress.delete(tabId);
+    lastMove.delete(tabId);
+  });
+
   async function executeCommand(tabId, command) {
     // Content-script vocabulary: {action:'execute_command', command:{type,...}}.
     return browser.tabs.sendMessage(tabId, { action: 'execute_command', command });
@@ -154,6 +160,11 @@ export function makeFakeSidePanel(browser) {
   const panelState = new Map(); // tabId -> setOptions argument
   let globalOpts = null;
   let activatedListener = null;
+
+  // H-1/H-2: Clean up panel state when tabs are closed to prevent memory leaks.
+  browser.tabs.onRemoved.addListener((tabId) => {
+    panelState.delete(tabId);
+  });
 
   async function windowIdOf(tabId) {
     try { const t = await browser.tabs.get(tabId); return t && t.windowId; } catch (_e) { return undefined; }
