@@ -508,7 +508,7 @@ class UAPServer {
       const now = Date.now() / 1000;
 
       return payload.exp > now;
-    } catch {
+    } catch (e) {
       console.warn('[Sentinel] token validation failed', e);
       return false;
     }

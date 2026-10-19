@@ -55,6 +55,8 @@ const __sentinelRejectionHandler = (event) => {
     }).catch(() => {});
   } catch (_e) {}
 };
+window.addEventListener('error', __sentinelErrorHandler);
+window.addEventListener('unhandledrejection', __sentinelRejectionHandler);
 //
 // (3.26.0) Content-side telemetry helper — fires `content_telemetry_event`
 // messages to the background, which re-emits via tel.emit() (telemetry.js).
@@ -649,7 +651,7 @@ if (window.__sentinelInitialized) {
             content = (iframeDoc.body ? iframeDoc.body.innerText : '').replace(/\n{3,}/g, '\n\n').trim();
           }
           return { content: `Iframe Title: ${title}\nURL: ${url}\n\n${content}` };
-        } catch {
+        } catch (e) {
           console.warn('[Sentinel] iframe content extraction failed', e);
           throw new Error('Cross-origin iframe -- use background routing');
         }
@@ -2914,9 +2916,11 @@ if (window.__sentinelInitialized) {
         dispatchSPATransition(lastUrl);
       }
     };
+    window.addEventListener('popstate', __sentinelPopstateHandler);
 
     // Cleanup on page unload to prevent memory leaks
     const cleanupObservers = () => {
+      window.removeEventListener('popstate', __sentinelPopstateHandler);
       if (domObserver) {
         domObserver.disconnect();
         domObserver = null;

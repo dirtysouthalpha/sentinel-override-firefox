@@ -40,7 +40,7 @@ window.__sentinelUtils.shadow = window.__sentinelUtils.shadow || {};
     try {
       const rootNode = el.getRootNode();
       return rootNode !== null && rootNode.host !== undefined;
-    } catch {
+    } catch (e) {
       console.warn('[Sentinel] isInShadowDOM failed', e);
       return false;
     }

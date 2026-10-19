@@ -1,3 +1,4 @@
+/* global sanitizeHtml */
 // Theme: respect the user's theme-preference from the popup if available;
     // default to dark for a comfortable reading experience.
     (function initTheme() {
@@ -7,13 +8,13 @@
             document.documentElement.classList.add('light-mode');
           }
         });
-      } catch (e) {
+      } catch (_e) {
         // localStorage fallback
         try {
           if (localStorage.getItem('theme-preference') === 'light') {
             document.documentElement.classList.add('light-mode');
           }
-        } catch (ee) {}
+        } catch (_ee) {}
       }
     })();
 
@@ -54,7 +55,7 @@
         // Decorate [src:key] / [unverified] markers as inline chips for
         // audit trail visibility.
         const decorated = html
-          .replace(/\[src:([a-z0-9_\-]+)\]/gi, '<span class="src-chip" title="Source: $1">$1</span>')
+          .replace(/\[src:([a-z0-9_-]+)\]/gi, '<span class="src-chip" title="Source: $1">$1</span>')
           .replace(/\[unverified\]/gi, '<span class="src-unverified">unverified</span>');
 
         document.getElementById('reportBody').innerHTML = sanitizeHtml(decorated);
@@ -116,5 +117,5 @@
       try {
         const isLight = document.documentElement.classList.contains('light-mode');
         chrome.storage.local.set({ 'theme-preference': isLight ? 'light' : 'dark' });
-      } catch (e) {}
+      } catch (_e) {}
     });

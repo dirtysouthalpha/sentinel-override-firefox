@@ -137,7 +137,7 @@ window.__sentinelUtils = window.__sentinelUtils || {};
       const root = document.documentElement || document.body || document;
       const appendNow = () => {
         try { root.appendChild(c); }
-        catch {
+        catch (e) {
           console.warn('[Sentinel] ensureCursor failed', e);
           // Fallback: try body
           try { (document.body || document).appendChild(c); } catch (e2) { console.warn('[Sentinel] cursor element append fallback failed:', getErrorMessage(e2)); }
@@ -243,7 +243,7 @@ window.__sentinelUtils = window.__sentinelUtils || {};
           ? options.duration
           : DEFAULT_TRAVEL_MS;
         return new Promise(resolve => setTimeout(resolve, dur));
-      } catch {
+      } catch (e) {
         console.warn('[Sentinel] moveTo failed', e);
         return Promise.resolve();
       }
@@ -264,7 +264,7 @@ window.__sentinelUtils = window.__sentinelUtils || {};
         const r = el.getBoundingClientRect();
         if (!r || (r.width === 0 && r.height === 0)) return Promise.resolve();
         return this.moveTo(r.left + r.width / 2, r.top + r.height / 2, options);
-      } catch {
+      } catch (e) {
         console.warn('[Sentinel] moveToElement failed', e);
         return Promise.resolve();
       }

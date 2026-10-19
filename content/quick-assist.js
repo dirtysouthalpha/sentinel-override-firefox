@@ -728,6 +728,15 @@ ${selectedText}`;
     }
   };
 
+  document.addEventListener('mousedown', __sentinelQaMouseDown);
+  document.addEventListener('keydown', __sentinelQaKeyDown);
+
+  // Cleanup document event listeners on page unload
+  window.addEventListener('pagehide', () => {
+    document.removeEventListener('mousedown', __sentinelQaMouseDown);
+    document.removeEventListener('keydown', __sentinelQaKeyDown);
+  });
+
   // Messages from background (context menu trigger)
   chrome.runtime.onMessage.addListener(function(msg, sender, sendResponse) {
     if (msg.action === 'show_quick_assist') {
@@ -765,9 +774,3 @@ ${selectedText}`;
   }
 
 })();
-
-  // Cleanup document event listeners on page unload
-  window.addEventListener('pagehide', () => {
-    document.removeEventListener('mousedown', __sentinelQaMouseDown);
-    document.removeEventListener('keydown', __sentinelQaKeyDown);
-  });
