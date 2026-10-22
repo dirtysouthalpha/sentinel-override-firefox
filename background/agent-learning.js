@@ -23,7 +23,7 @@ export async function initLearningEngine() {
     _platformPatterns = stored[PLATFORM_PATTERNS_KEY] || {};
     _autoPlaybooks = stored[PLAYBOOK_AUTO_KEY] || [];
   } catch (e) {
-
+    console.warn('[Sentinel/Learn] Init failed:', getErrorMessage(e));
   }
 }
 
@@ -241,6 +241,6 @@ async function _persist() {
       [PLAYBOOK_AUTO_KEY]: _autoPlaybooks
     });
   } catch (e) {
-
+    console.warn('[Sentinel/Learn] Persist failed:', getErrorMessage(e));
   }
 }

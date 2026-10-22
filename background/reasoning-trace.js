@@ -92,7 +92,7 @@ export async function captureReasoningStep(phase, direction, data = {}) {
   if (!_currentRunId) return;
   const trace = _traceCache.get(_currentRunId);
   if (!trace) {
-
+    console.warn('[Sentinel] No active reasoning trace');
     return;
   }
 

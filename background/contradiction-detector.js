@@ -25,6 +25,7 @@ export function analyzeForContradictions(text) {
   const directNegations = findDirectNegationContradictions(text);
   contradictions.push(...directNegations);
 
+  // Temporal contradictions (e.g., "before X" then "after X")
   const temporalContradictions = findTemporalContradictions(text);
   contradictions.push(...temporalContradictions);
 

@@ -9,6 +9,9 @@ import { getPlatformProfile } from './platforms/index.js';
 import { getErrorMessage, sleep } from './error-utils.js';
 import { prepareVision, onVisionRejection, onVisionSuccess } from './vision-adapter.js';
 import { resolveSystemPrompt } from './remote-config.js';
+// (O4/A1) Cross-run endpoint cooldown breaker — keeps the endpoint resting
+// between runs; the SO-94 fail-streak below aborts the run itself.
+import { endpointBreaker } from './endpoint-breaker.js';
 
 // v20.1: system prompt = provider tweak merged with any remote-config patch
 // (Claude-in-Chrome-style server-config prompts, over SO's storage).
@@ -933,7 +936,7 @@ export function getPlatformContext(currentUrl, goal) {
     const profile = getPlatformProfile(currentUrl, goal);
     selectorBlock = _formatProfileSelectorsBlock(profile, currentUrl);
   } catch (e) {
-
+    console.warn('[Sentinel/llm] Profile lookup failed:', getErrorMessage(e));
     // Continue without selector block - non-fatal
   }
   const ctx = prose + selectorBlock;
@@ -1177,7 +1180,7 @@ export async function generatePlan(goal, settings, context = {}) {
     });
     clearTimeout(timeout);
     if (!response.ok) {
-
+      console.warn('Plan generation API returned', response.status, '— using goal as single-step fallback');
       return [(goal || 'Complete the task').substring(0, 300)];
     }
     const data = await response.json();
@@ -1189,7 +1192,7 @@ export async function generatePlan(goal, settings, context = {}) {
     }
     const content = provider.parseResponse(data);
     if (!content) {
-
+      console.warn('Plan generation: empty response content — using single-step fallback');
       return [(goal || 'Complete the task').substring(0, 300)];
     }
     // Pre-process: strip <think>...</think> blocks that some GLM/DeepSeek models embed
@@ -1269,7 +1272,7 @@ export async function generatePlan(goal, settings, context = {}) {
             }
           } catch (parseErr) {
             /* Not valid JSON at this position - keep scanning for next { */
-
+            console.warn('[Sentinel/llm] JSON parse attempt at position', s2start, 'failed:', getErrorMessage(parseErr));
           }
           s2from = s2end + 1;
         } else { break; }
@@ -1308,7 +1311,7 @@ export async function generatePlan(goal, settings, context = {}) {
         // Single replace with alternation is more efficient than chained replaces
         const steps = numberedLines.map(l => l.replace(/^(?:\d+[.)]\s+|[Ss]tep\s+\d+[:.)\s]+)/, '').trim()).filter(s => s.length >= 8);
         if (steps.length >= 2) {
-
+          console.warn(`Plan generation: extracted ${steps.length} numbered steps from prose`);
           return steps;
         }
       }
@@ -1317,7 +1320,7 @@ export async function generatePlan(goal, settings, context = {}) {
       if (bulletLines.length >= 2) {
         const steps = bulletLines.map(l => l.replace(/^[-*•→]\s+/, '').trim()).filter(s => s.length >= 8);
         if (steps.length >= 2) {
-
+          console.warn(`Plan generation: extracted ${steps.length} bullet steps from prose`);
           return steps;
         }
       }
@@ -1325,11 +1328,11 @@ export async function generatePlan(goal, settings, context = {}) {
 
     // Strategy 5: single-step fallback from goal — guarantees a non-null plan
     // even when the model ignores the JSON instruction entirely.
-
+    console.warn('Plan generation: all JSON strategies failed, creating single-step fallback. Content:', contentNoThink.slice(0, 200));
     return [(goal || 'Complete the task').substring(0, 300)];
   } catch (e) {
     clearTimeout(timeout);
-
+    console.warn('Plan generation failed (non-fatal):', getErrorMessage(e));
     // Even on hard exception, return a minimal fallback so the loop has a plan.
     return goal ? [goal.substring(0, 300)] : ['Complete the task'];
   }
@@ -1422,13 +1425,19 @@ const SENTINEL_TOOLS = [
  * @returns {Promise<Object>} Parsed LLM response object.
  */
 export async function callLLMWithRetry(trimmedElements, totalElementCount, pageContent, base64Image, goal, history, stepCount, currentUrl, retryCount, CONFIG, agentState) {
-
+  if (!endpointBreaker.canRequest()) {
+    const _bs = endpointBreaker.getStatus();
+    throw new Error(`ENDPOINT_BREAKER_OPEN: endpoint cooling down for another ${Math.ceil(_bs.msUntilProbe / 1000)}s (last: ${_bs.lastReason})`);
+  }
+  console.log('[Sentinel/LLM] callLLMWithRetry called. model=' + (agentState && agentState.model ? agentState.model : 'default') + ' messages=' + (history ? history.length : 0));
   try {
     const _result = await callLLM(trimmedElements, totalElementCount, pageContent, base64Image, goal, history, stepCount, currentUrl, CONFIG, agentState);
     _llmFailStreak = 0; // (SO-94) a successful call resets the API breaker
+    endpointBreaker.recordSuccess();
     return _result;
   } catch (err) {
     _llmFailStreak++; // (SO-94) raw-failure streak: retries included, success-only reset
+    endpointBreaker.recordRejection(getErrorMessage(err));
     if (_llmFailStreak >= LLM_FAIL_STREAK_LIMIT && getErrorMessage(err) !== 'STOPPED_BY_USER') {
       _llmFailStreak = 0;
       throw new Error(`API_UNREACHABLE_BREAKER: ${LLM_FAIL_STREAK_LIMIT} consecutive LLM-call failures (last: ${getErrorMessage(err)})`);
@@ -2066,6 +2075,8 @@ ${provider.supportsToolUse ? '' : 'IMPORTANT: Return ONLY a single JSON object l
 // _llmFailStreak counts RAW consecutive LLM-call failures (retries included);
 // only a successful call resets it, so no other subsystem can mask a dead
 // endpoint. At the limit the run aborts instead of marching to the step cap.
+// (O4/A1) Cross-run endpoint cooldown breaker — the module keeps the
+// endpoint resting between runs; SO-94 below aborts the run itself.
 const LLM_FAIL_STREAK_LIMIT = 5;
 let _llmFailStreak = 0;
 const _activeLLMCtrls = new Set();
@@ -2087,7 +2098,7 @@ async function callLLM(trimmedElements, totalElementCount, pageContent, base64Im
     if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
       const limitCheck = await chrome.runtime.sendMessage({ action: 'check_credit_limit' }).catch(() => null);
       if (limitCheck && !limitCheck.allowed) {
-
+        console.warn('[Sentinel/LLM] Daily credit limit exceeded');
         return { type: 'finish', summary: 'Daily credit limit reached. Increase limit in Settings or wait until tomorrow.' };
       }
     }
@@ -2096,7 +2107,7 @@ async function callLLM(trimmedElements, totalElementCount, pageContent, base64Im
   const providerConfig = await getActiveProvider();
   const { endpoint, apiKey } = providerConfig;
   // (SO-73) Keyless local endpoints: llama-server/vLLM/Ollama on loopback need no key.
-  const _isLocalEndpoint = /^(https?:)?\/\/(127\.0\.0\.1|localhost|\[::1\])([:\/]|$)/i.test(endpoint || '');
+  const _isLocalEndpoint = /^(https?:)?\/\/(127\.0\.0\.1|localhost|\[::1\])([:/]|$)/i.test(endpoint || '');
   if (!apiKey && !_isLocalEndpoint) {
     console.error('[Sentinel/LLM] No API key configured! Provider:', providerConfig.providerId || endpoint || 'unknown');
     throw new Error('No API key configured. Open Settings and configure a provider.');
@@ -2295,7 +2306,7 @@ You are executing a structured, multi-phase IT investigation. Rules for this mod
   }
   clearTimeout(fetchTimeout);
   _activeLLMCtrls.delete(controller);
-
+  console.log('[Sentinel/LLM] Response received. status=' + (response ? response.status : 'null'));
   let _apiHealthRecorded = false;
   try {
   if (!response.ok) {
@@ -2307,7 +2318,7 @@ You are executing a structured, multi-phase IT investigation. Rules for this mod
     // text-only. Some OpenAI-compatible endpoints (e.g. Z.AI for text-primary
     // GLM variants) reject image_url even though the protocol accepts it.
     if (response.status === 400 && _useVision) {
-
+      console.warn('[Sentinel] Vision request rejected (400) — climbing degradation ladder. Error:', (errorData || 'unknown error').slice(0, 200));
       // v20.1: try cheaper image modes (grayscale -> tile -> crop) before
       // abandoning vision; learn per-model verdicts along the way.
       let _visionRecovered = false;
@@ -2423,6 +2434,7 @@ You are executing a structured, multi-phase IT investigation. Rules for this mod
   // API Health: record successful response
   _apiHealthRecorded = true; _apiHealth.record(_apiStart, true);
 
+
   // Extract reasoning_content from models that return it (GLM, DeepSeek, etc.)
   // This is the model's chain-of-thought, separate from the action text.
   // parseLLMResponse captures text-before-JSON reasoning; this captures the
@@ -2448,7 +2460,7 @@ You are executing a structured, multi-phase IT investigation. Rules for this mod
         return provider.parseToolUseResponse(data);
       } catch (e) {
         // Malformed Anthropic tool_use response — fall through to text parsing
-
+        console.warn('[Sentinel] Anthropic parseToolUseResponse failed, falling back to text parsing:', getErrorMessage(e));
       }
     }
     // OpenAI-compatible: check for tool_calls in the response message
@@ -2459,7 +2471,7 @@ You are executing a structured, multi-phase IT investigation. Rules for this mod
         return provider.parseToolUseResponse(data);
       } catch (e) {
         // parseToolUseResponse failed — fall through to text parsing
-
+        console.warn('[Sentinel] tool_use parse failed, falling back to text parsing:', getErrorMessage(e));
       }
     }
     // Fallback: model returned text instead of tool_calls (e.g. finish_reason !== 'tool_calls')
@@ -2468,7 +2480,7 @@ You are executing a structured, multi-phase IT investigation. Rules for this mod
       const responseText = provider.parseResponse(data);
       if (responseText) return _attachReasoning(parseLLMResponse(responseText));
     } catch (e) {
-
+      console.warn('[Sentinel/llm] parseResponse fallback failed:', getErrorMessage(e));
     }
     // If we get here, the model returned tool_calls but parsing failed AND text fallback failed
     // One last attempt: try the raw tool_calls directly
@@ -2504,19 +2516,19 @@ You are executing a structured, multi-phase IT investigation. Rules for this mod
           if (_fm && _fm[1]) _query = _fm[1].trim();
         }
         if (_query) {
-
+          console.warn('[Sentinel/FALLBACK] Detected smart_navigate intent from content — site:', _site, 'query:', _query);
           return { type: 'smart_navigate', site: _site, query: _query };
         }
       }
       // Detect explicit navigate URL in content
       const _navUrl = _intentText.match(NAVIGATE_URL_RE);
       if (_navUrl && _navUrl[1]) {
-
+        console.warn('[Sentinel/FALLBACK] Detected navigate intent from content — url:', _navUrl[1]);
         return { type: 'navigate', url: _navUrl[1] };
       }
       // v3.63: Detect navigate_back / go back intent
       if (/\b(?:go|navigate)\s*back\b|\bback\s+to\b|\breturn\s+to\b|\bprevious\s+page\b/i.test(_intentText)) {
-
+        console.warn('[Sentinel/FALLBACK] Detected navigate_back intent from content');
         return { type: 'navigate_back' };
       }
       // v3.63: Detect navigate to named site from content ("go to Amazon", "navigate to Reddit")
@@ -2524,13 +2536,13 @@ You are executing a structured, multi-phase IT investigation. Rules for this mod
       if (_siteUrl && _siteUrl[1]) {
         const _mapped = SITE_DOMAIN_MAP[_siteUrl[1].toLowerCase().replace(WHITESPACE_REPLACE_RE, '')];
         if (_mapped) {
-
+          console.warn('[Sentinel/FALLBACK] Detected navigate to site from content:', _mapped);
           return { type: 'navigate', url: `https://${_mapped}` };
         }
       }
       // v3.63: Detect finish intent from content
       if (/\b(?:finish|done|complete|here\s+(?:is|are)|summary|report)\b/i.test(_intentText) && /\b(?:task|report|findings|articles|results)\b/i.test(_intentText)) {
-
+        console.warn('[Sentinel/FALLBACK] Detected finish intent from content');
         return { type: 'finish', summary: _intentText.substring(0, 500) };
       }
     }
@@ -2541,7 +2553,7 @@ You are executing a structured, multi-phase IT investigation. Rules for this mod
   try {
     responseText = provider.parseResponse(data);
   } catch (e) {
-
+    console.warn('[Sentinel/llm] parseResponse failed (non-tool-use path):', getErrorMessage(e));
     return { type: 'note', text: 'LLM returned an unparseable response. Will retry.' };
   }
   if (!responseText) return { type: 'note', text: 'Empty LLM response — will retry on next step.' };
@@ -2736,7 +2748,7 @@ export function parseLLMResponse(content) {
       try {
         const salvaged = regexSalvageFinishOrNote(content);
         if (salvaged) {
-
+          console.warn(`[Sentinel] Recovered ${salvaged.type} action via regex salvage`);
           return salvaged;
         }
       } catch (e) { console.warn('[Sentinel/llm] Parse failed:', getErrorMessage(e)); }
@@ -2793,7 +2805,7 @@ export async function callLLMSimple(systemPrompt, userPrompt, maxTokens = 1200) 
   const providerConfig = await getActiveProvider();
   if (!providerConfig) throw new Error('No active provider configured. Set one in extension settings.');
   const { endpoint, apiKey, model } = providerConfig;
-  const _isLocalEndpoint = /^(https?:)?\/\/(127\.0\.0\.1|localhost|\[::1\])([:\/]|$)/i.test(endpoint || '');
+  const _isLocalEndpoint = /^(https?:)?\/\/(127\.0\.0\.1|localhost|\[::1\])([:/]|$)/i.test(endpoint || '');
   if (!apiKey && !_isLocalEndpoint) throw new Error('API key not configured. Set it in extension settings.');
   const provider = resolveProvider(endpoint);
   if (!provider) throw new Error(`Unknown provider for endpoint: ${endpoint}`);

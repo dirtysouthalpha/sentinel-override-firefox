@@ -1,94 +1,68 @@
-﻿// background/agent-recovery.js
-// Agent-level error recovery policy (ERR-04).
-// Wraps agent operations with auto-retry and error card emission.
-
+// background/agent-recovery.js — Agent-level error recovery policy (ERR-04)
 import { AgentError, ERROR_CODES, isRetryable, wrapError } from './agent-errors.js';
 
-const MAX_AUTO_RETRIES = 3;
-const RETRY_DELAYS_MS = [2000, 4000, 8000]; // Exponential: 2s, 4s, 8s
-
-// Track retry counts per operation
+const MAX_AUTO_RETRIES = 5;
+const BASE_RETRY_DELAY_MS = 1000;
+const MAX_RETRY_DELAY_MS = 30000;
 const retryCounts = new Map();
+const retryContexts = new Map();
 
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
+function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+
+function backoffDelay(attempt) {
+  const exp = Math.min(MAX_RETRY_DELAY_MS, BASE_RETRY_DELAY_MS * Math.pow(2, attempt - 1));
+  return Math.floor(Math.random() * exp);
 }
 
-/**
- * Emit an error card to the popup chat.
- * @param {AgentError} error
- */
 function emitErrorCard(error) {
   try {
-    chrome.runtime.sendMessage({
-      action: 'agent_error',
-      error: error.toJSON()
-    }).catch(() => { /* popup may not be open */ });
-  } catch (_e) { /* non-fatal */ }
+    chrome.runtime.sendMessage({ action: 'agent_error', error: error.toJSON() }).catch(() => {});
+  } catch (_e) {}
 }
 
-/**
- * Execute an async operation with auto-retry policy.
- * - Retryable errors: auto-retry up to MAX_AUTO_RETRIES times
- * - After max retries: emit error card and throw
- * - Non-retryable errors: emit error card immediately and throw
- *
- * @param {Function} fn - async function to execute
- * @param {object} context - metadata to attach to errors (goal, stepNumber, etc.)
- * @param {string} operationId - unique key for retry tracking
- * @returns {Promise<*>} result of fn()
- */
+function emitRecoveryNotice(message, meta = {}) {
+  try {
+    chrome.runtime.sendMessage({ action: 'agent_recovery_notice', message, ...meta }).catch(() => {});
+  } catch (_e) {}
+}
+
 export async function withRecovery(fn, context = {}, operationId = 'default') {
   const key = operationId;
   let attempts = retryCounts.get(key) || 0;
-
+  const retryLog = retryContexts.get(key) || [];
   try {
     const result = await fn();
-    retryCounts.delete(key);
+    retryCounts.delete(key); retryContexts.delete(key);
     return result;
   } catch (rawError) {
-    const error = rawError instanceof AgentError
-      ? rawError
-      : wrapError(rawError, ERROR_CODES.UNKNOWN, null, false, context);
-
+    const error = rawError instanceof AgentError ? rawError : wrapError(rawError, ERROR_CODES.UNKNOWN, null, false, context);
     attempts++;
     retryCounts.set(key, attempts);
-
+    retryLog.push({ attempt: attempts, code: error.code, ts: Date.now() });
+    retryContexts.set(key, retryLog);
     if (error.retryable && attempts < MAX_AUTO_RETRIES) {
-      const delay = RETRY_DELAYS_MS[Math.min(attempts - 1, RETRY_DELAYS_MS.length - 1)];
-
+      const delay = backoffDelay(attempts);
+      console.warn('[AGENT-RECOVERY] Retry attempt ' + attempts + '/' + MAX_AUTO_RETRIES + ' in ' + delay + 'ms:', error.code);
+      emitRecoveryNotice('Retrying (' + attempts + '/' + MAX_AUTO_RETRIES + ')', { attempt: attempts, delayMs: delay });
       await sleep(delay);
       return withRecovery(fn, context, operationId);
     }
-
-    // Max retries exceeded or non-retryable — emit error card
-    console.error('[AGENT-RECOVERY] ' + (error.retryable ? 'Max retries exceeded' : 'Non-retryable error') + ':', error.code, error.message);
+    console.error('[AGENT-RECOVERY] Final error:', error.code, error.message);
     const finalError = error.retryable
-      ? new AgentError({
-          code: ERROR_CODES.MAX_RETRIES_EXCEEDED,
-          message: 'Failed after ' + attempts + ' attempts: ' + error.message,
-          suggestion: error.suggestion || 'Try again manually or adjust your goal.',
-          retryable: true,
-          context: { ...context, originalCode: error.code, attempts }
-        })
+      ? new AgentError({ code: ERROR_CODES.MAX_RETRIES_EXCEEDED, message: 'Failed after ' + attempts + ' attempts: ' + error.message, suggestion: error.suggestion || 'Try again manually.', retryable: true, context: { ...context, originalCode: error.code, attempts, retryLog } })
       : error;
-
     emitErrorCard(finalError);
     throw finalError;
   }
 }
 
-/**
- * Reset retry count for an operation (e.g., after a successful step).
- */
-export function resetRetries(operationId) {
-  retryCounts.delete(operationId);
+export async function withTimeout(fn, timeoutMs, context = {}, operationId = 'default_timeout') {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new AgentError({ code: ERROR_CODES.LLM_TIMEOUT, message: 'Timed out after ' + timeoutMs + 'ms', retryable: true, context })), timeoutMs);
+    fn().then(r => { clearTimeout(timer); resolve(r); }, e => { clearTimeout(timer); reject(e); });
+  });
 }
 
-/**
- * Get current retry count for an operation.
- */
-export function getRetryCount(operationId) {
-  return retryCounts.get(operationId) || 0;
-}
-
+export function resetRetries(operationId) { retryCounts.delete(operationId); retryContexts.delete(operationId); }
+export function getRetryCount(operationId) { return retryCounts.get(operationId) || 0; }
+export function getRetryLog(operationId) { return retryContexts.get(operationId) || []; }

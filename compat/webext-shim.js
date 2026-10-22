@@ -234,8 +234,11 @@ function wrapWithCallbackSupport(obj) {
   // Do not wrap event objects (they have addListener/removeListener)
   if (typeof obj.addListener === "function") return obj;
   var wrapped = {};
-  for (var key of Object.keys(obj)) {
-    var val = obj[key];
+  // `const` (not `var`) is load-bearing: `var` is function-scoped, so every
+  // closure below would share ONE `val` binding and read whatever the final
+  // iteration left there — "can't access property apply, val is undefined".
+  for (const key of Object.keys(obj)) {
+    const val = obj[key];
     if (typeof val === "function") {
       wrapped[key] = function() {
         var args = Array.prototype.slice.call(arguments);
@@ -271,6 +274,9 @@ export function installWebextShim(browser) {
   }
   chrome.debugger = makeFakeDebugger(browser);
   chrome.sidePanel = makeFakeSidePanel(browser);
+  // Firefox has no tabGroups API; agent-engine groups attached tabs for a
+  // visual glow. The stub keeps those call sites no-ops instead of throwing.
+  chrome.tabGroups = { update: async () => undefined, query: async () => [] };
   globalThis.chrome = chrome;
   return chrome;
 }

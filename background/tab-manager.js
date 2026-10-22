@@ -570,6 +570,7 @@ export function clearObservabilityBuffers(tabId) {
   observabilityListenersInstalled.delete(tabId);
 }
 
+
 /**
  * Install a one-time chrome.debugger.onDetach listener.
  * On detach, cleans up the tab's attached state, observability buffers,
@@ -961,7 +962,7 @@ export async function cdpDispatchType(tabId, text, options = {}) {
             consecutiveErrors = 0;
           } catch (e) {
             consecutiveErrors++;
-
+            console.warn('[Sentinel/tab-manager] typing progress update failed:', getErrorMessage(e));
             if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
               return { ok: false, error: `Content script unreachable after ${MAX_CONSECUTIVE_ERRORS} consecutive failures` };
             }
@@ -984,7 +985,7 @@ export async function cdpDispatchType(tabId, text, options = {}) {
           consecutiveErrors = 0;
         } catch (e) {
           consecutiveErrors++;
-
+          console.warn('[Sentinel/tab-manager] character dispatch failed:', getErrorMessage(e));
           if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
             return { ok: false, error: `Debugger command failed after ${MAX_CONSECUTIVE_ERRORS} consecutive failures` };
           }
@@ -1143,7 +1144,18 @@ export async function takeScreenshot(tabId, windowId, currentUrl, screenshotCach
     observabilityListenersInstalled.delete(tabId);
     try { await chrome.debugger.detach({ tabId }); } catch(e) { console.warn('[Sentinel/tab-manager] Debugger detach failed in error path:', getErrorMessage(e)); }
     try {
-      const screenshotDataUrl = await chrome.tabs.captureVisibleTab(windowId, { format: 'jpeg', quality: CONFIG.screenshotQuality });
+      const screenshotDataUrl = await new Promise((resolve, reject) => {
+        chrome.tabs.captureVisibleTab(windowId, { format: 'jpeg', quality: CONFIG.screenshotQuality }, (dataUrl) => {
+          if (typeof chrome.runtime.lastError === 'object' && chrome.runtime.lastError !== null) {
+            const err = typeof chrome.runtime.lastError === 'object' && chrome.runtime.lastError !== null && typeof chrome.runtime.lastError.message === 'string' ? chrome.runtime.lastError.message : String(chrome.runtime.lastError);
+            reject(new Error(err || 'Screenshot capture failed'));
+          } else if (typeof dataUrl !== 'string' || !dataUrl.length) {
+            reject(new Error('Screenshot capture returned empty data'));
+          } else {
+            resolve(dataUrl);
+          }
+        });
+      });
       const _parts = typeof screenshotDataUrl === 'string' && screenshotDataUrl ? screenshotDataUrl.split(',') : [];
       if (!Array.isArray(_parts) || _parts.length < 2 || !_parts[1] || !_parts[1].length) throw new Error('captureVisibleTab returned invalid data URL');
       base64Image = _parts[1];

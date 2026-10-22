@@ -29,7 +29,7 @@ function loadThemePreference() {
   try {
     savedNamedTheme = localStorage.getItem('theme-named');
   } catch (e) {
-
+    console.warn('[Sentinel/settings] Failed to read theme-named:', window.getErrorMessage ? window.getErrorMessage(e) : String(e));
   }
   if (savedNamedTheme && savedNamedTheme !== 'light') {
     applyThemePreset(savedNamedTheme);
@@ -46,7 +46,7 @@ function loadThemePreference() {
   try {
     savedTheme = localStorage.getItem('theme-preference');
   } catch (e) {
-
+    console.warn('[Sentinel/settings] Failed to read theme-preference:', window.getErrorMessage ? window.getErrorMessage(e) : String(e));
   }
   if (savedTheme) {
     document.body.classList.toggle('dark-mode', savedTheme === 'dark');
@@ -63,7 +63,7 @@ function updateThemeToggle() {
   try {
     localStorage.setItem('theme-preference', isDark ? 'dark' : 'light');
   } catch (e) {
-
+    console.warn('[Sentinel/settings] Failed to save theme preference:', getErrorMessage(e));
     showToast('Failed to save theme preference', 'error');
   }
 }
@@ -727,7 +727,7 @@ if (settingsBtn) settingsBtn.addEventListener('click', async () => {
   try {
     stored = await chrome.storage.local.get(['active_provider', 'providers', 'api_endpoint', 'api_key', 'model']);
   } catch (e) {
-
+    console.warn('[Sentinel/settings] storage read failed:', window.getErrorMessage ? window.getErrorMessage(e) : String(e));
     stored = {};
   }
 
@@ -1041,7 +1041,7 @@ function applyThemePreset(theme) {
     try {
       localStorage.setItem('theme-named', theme);
     } catch (e) {
-
+      console.warn('[Sentinel/settings] Failed to save theme-named:', window.getErrorMessage ? window.getErrorMessage(e) : String(e));
       showToast('Failed to save theme', 'error');
     }
     // Remove all theme glow classes
@@ -1084,7 +1084,7 @@ if (saveThemeBtn) saveThemeBtn.addEventListener('click', () => {
   try {
     localStorage.setItem('custom-theme', JSON.stringify({ primary, bg, text }));
   } catch (e) {
-
+    console.warn('[Sentinel/settings] Failed to save custom theme:', window.getErrorMessage ? window.getErrorMessage(e) : String(e));
     showToast('Failed to save custom theme', 'error');
   }
   if (themeModal) themeModal.classList.remove('show');
@@ -1173,6 +1173,7 @@ if (testConnectionBtn) testConnectionBtn.addEventListener('click', async () => {
 // Loads the 16-provider catalog from the background, populates the dropdown,
 // auto-fills the endpoint on selection, and provides a Detect Models button
 // that calls the provider's /models endpoint with the user's API key.
+
 
 (function wireProviderCatalog() {
   const sel = document.getElementById('providerCatalogSelect');
@@ -1341,7 +1342,7 @@ if (testConnectionBtn) testConnectionBtn.addEventListener('click', async () => {
       }
       el.textContent = css || '';
     } catch (e) {
-
+      console.warn('[Sentinel/settings] CSS application failed:', window.getErrorMessage ? window.getErrorMessage(e) : String(e));
     }
   }
 
@@ -1349,7 +1350,7 @@ if (testConnectionBtn) testConnectionBtn.addEventListener('click', async () => {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved) applyCustomCss(saved);
   } catch (e) {
-
+    console.warn('[Sentinel/settings] localStorage access failed:', window.getErrorMessage ? window.getErrorMessage(e) : String(e));
   }
 
   function wire() {
@@ -1363,7 +1364,7 @@ if (testConnectionBtn) testConnectionBtn.addEventListener('click', async () => {
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved) ta.value = saved;
     } catch (e) {
-
+      console.warn('[Sentinel/settings] localStorage access failed:', window.getErrorMessage ? window.getErrorMessage(e) : String(e));
     }
 
     let saveTimer = null;
@@ -1383,7 +1384,7 @@ if (testConnectionBtn) testConnectionBtn.addEventListener('click', async () => {
       debounce = setTimeout(() => {
         const css = ta.value || '';
         try { localStorage.setItem(STORAGE_KEY, css); } catch (e) {
-
+        console.warn('[Sentinel/settings] localStorage save failed:', window.getErrorMessage ? window.getErrorMessage(e) : String(e));
       }
         applyCustomCss(css);
         setStatus('saved', '#6fcf80');
@@ -1393,7 +1394,7 @@ if (testConnectionBtn) testConnectionBtn.addEventListener('click', async () => {
     if (applyBtn) applyBtn.addEventListener('click', () => {
       const css = ta.value || '';
       try { localStorage.setItem(STORAGE_KEY, css); } catch (e) {
-
+        console.warn('[Sentinel/settings] localStorage save failed:', window.getErrorMessage ? window.getErrorMessage(e) : String(e));
       }
       applyCustomCss(css);
       setStatus('applied', '#6fcf80');
@@ -1401,7 +1402,7 @@ if (testConnectionBtn) testConnectionBtn.addEventListener('click', async () => {
     if (clearBtn) clearBtn.addEventListener('click', () => {
       ta.value = '';
       try { localStorage.removeItem(STORAGE_KEY); } catch (e) {
-
+        console.warn('[Sentinel/settings] localStorage remove failed:', window.getErrorMessage ? window.getErrorMessage(e) : String(e));
       }
       applyCustomCss('');
       setStatus('cleared', 'var(--text-tertiary)');
@@ -1430,7 +1431,7 @@ if (testConnectionBtn) testConnectionBtn.addEventListener('click', async () => {
           if (theme === 'dark') document.body.classList.add('dark-mode');
           else document.body.classList.remove('dark-mode');
           try { localStorage.setItem('theme-named', theme); } catch (e) {
-
+            console.warn('[Sentinel/settings] localStorage save failed:', window.getErrorMessage ? window.getErrorMessage(e) : String(e));
           }
           const allThemePresets = document.querySelectorAll('.theme-preset');
           if (allThemePresets.length) {

@@ -15,6 +15,7 @@ window.addEventListener('DOMContentLoaded', () => {
   setupVoiceInput();
   setupApprovalModeToggle();
 
+  // Templates button toggle
   const templatesBtn = document.getElementById('templatesBtn');
   if (templatesBtn) {
     templatesBtn.addEventListener('click', () => {

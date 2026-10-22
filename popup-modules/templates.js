@@ -1,5 +1,5 @@
 // popup-modules/templates.js
-
+// Template library UI: list, search, filter, create, edit, run, delete.
 // Depends on: ui-common.js (showToast, sanitizeHtml).
 // Communicates with background via chrome.runtime.sendMessage (template_* actions).
 

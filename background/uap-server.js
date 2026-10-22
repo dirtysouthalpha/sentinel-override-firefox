@@ -10,6 +10,7 @@
 
 const uuidv4 = () => crypto.randomUUID();
 import { getErrorMessage } from './error-utils.js';
+import { timingSafeEqual, verifyJwtHs256, verifyPayload } from './sig-utils.js';
 
 // Precompile regex for tenant validation (performance optimization)
 const ONMICROSOFT_TENANT_RE = /^[a-z0-9.-]+\.onmicrosoft\.com$/;
@@ -37,12 +38,22 @@ class UAPServer {
       timeout: {
         goal: 300000, // 5 minutes
         handshake: 10000 // 10 seconds
-      }
+      },
+      // v21 security: no built-in test tokens. Clients authenticate with
+      // either the shared `authToken` (constant-time compare) or an HS256 JWT
+      // signed with `jwtSecret`. With neither configured every request is
+      // rejected — an unsigned claim is not authentication.
+      authToken: '',
+      jwtSecret: '',
+      // Shared secret for peer registration signatures (HMAC-SHA256 over the
+      // canonical payload, see sig-utils.js). Unset => peers cannot register.
+      federationSecret: ''
     };
-    
+
     // Crypto for federation (Ed25519)
     this.keyPair = null;
     this.peerTrust = new Map(); // peerId → trustScore
+    this._warnedNoAuth = false;
   }
 
   /**
@@ -54,7 +65,7 @@ class UAPServer {
       await this.loadConfig();
       
       if (!this.config.enabled) {
-
+        console.log('[UAP] Server disabled in config');
         return;
       }
 
@@ -67,6 +78,7 @@ class UAPServer {
       // Setup periodic cleanup
       this.setupCleanup();
 
+      console.log('[UAP] Server initialized on port', this.config.port);
     } catch (error) {
       console.error('[UAP] Initialization failed:', error);
       throw error;
@@ -80,7 +92,7 @@ class UAPServer {
     return new Promise((resolve) => {
       chrome.storage.local.get(['uapConfig'], (result) => {
         if (chrome.runtime.lastError) {
-
+          console.warn('[UAP] Failed to load config:', chrome.runtime.lastError.message);
           resolve();
           return;
         }
@@ -102,7 +114,7 @@ class UAPServer {
       publicKey: 'p_placeholder_' + uuidv4(),
       secretKey: 's_placeholder_' + uuidv4()
     };
-
+    console.log('[UAP] Federation keypair generated');
   }
 
   /**
@@ -115,7 +127,9 @@ class UAPServer {
     
     // For this implementation, we'll use a message-based protocol
     // that simulates WebSocket behavior over chrome.runtime
-
+    
+    console.log('[UAP] Message-based server started');
+    
     // Listen for UAP messages from content scripts or external apps
     chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => {
       this.handleMessage(message, sender, sendResponse);
@@ -178,7 +192,7 @@ class UAPServer {
     const clientId = this.getClientId(sender);
 
     // Authentication check
-    if (!this.authenticate(clientId, payload.authToken)) {
+    if (!(await this.authenticate(clientId, payload.authToken))) {
       sendResponse({ type: 'error', id, error: 'authentication_failed' });
       this.logAudit('auth_failed', clientId, { goal });
       return;
@@ -434,8 +448,8 @@ class UAPServer {
   async handleRegisterPeer(id, payload, sender, sendResponse) {
     const { peer_id, capabilities, max_concurrent_goals, trust_score_baseline } = payload;
 
-    // Validate peer signature
-    if (!this.verifyPeerSignature(payload)) {
+    // Validate peer signature (HMAC-SHA256 over the canonical payload)
+    if (!(await this.verifyPeerSignature(payload))) {
       sendResponse({ type: 'error', id, error: 'invalid_signature' });
       return;
     }
@@ -489,25 +503,33 @@ class UAPServer {
   /**
    * Authenticate client
    */
-  authenticate(clientId, authToken) {
-    // In production, verify JWT or API key
-    // For now, accept if token exists and is not expired
-    if (!authToken) return false;
+  async authenticate(clientId, authToken) {
+    if (!authToken || typeof authToken !== 'string') return false;
+
+    const shared = this.config.authToken;
+    const jwtSecret = this.config.jwtSecret;
+
+    if (!shared && !jwtSecret) {
+      if (!this._warnedNoAuth) {
+        this._warnedNoAuth = true;
+        console.warn('[UAP] No authToken/jwtSecret configured — rejecting all requests');
+      }
+      return false;
+    }
 
     try {
-      // Allow simple test tokens for development/testing
-      if (authToken === 'valid_token' || authToken === 'test_token') {
+      // Shared token: constant-time compare, no prefix/length probing.
+      if (shared && typeof shared === 'string' && timingSafeEqual(shared, authToken)) {
         return true;
       }
 
-      // Basic token validation
-      const parts = authToken.split('.');
-      if (parts.length !== 3) return false; // JWT format
+      // HS256 JWT: structure + signature + exp, all verified in sig-utils.
+      if (jwtSecret && authToken.includes('.')) {
+        const claims = await verifyJwtHs256(authToken, jwtSecret);
+        return claims !== null;
+      }
 
-      const payload = JSON.parse(atob(parts[1]));
-      const now = Date.now() / 1000;
-
-      return payload.exp > now;
+      return false;
     } catch (e) {
       console.warn('[Sentinel] token validation failed', e);
       return false;
@@ -550,7 +572,7 @@ class UAPServer {
 
     // Tenant validation (for M365 work)
     if (validated.tenant && !validated.tenant.match(ONMICROSOFT_TENANT_RE)) {
-
+      console.warn('[UAP] Invalid tenant format:', validated.tenant);
       validated.tenant = null;
     }
 
@@ -574,10 +596,11 @@ class UAPServer {
   /**
    * Verify peer signature
    */
-  verifyPeerSignature(payload) {
-    // In production, use Ed25519 verification
-    // For now, basic check
-    return payload.signature && payload.peer_id;
+  async verifyPeerSignature(payload) {
+    if (!payload || !payload.peer_id || !payload.signature) return false;
+    // HMAC-SHA256 over the canonical payload (minus `signature`) with the
+    // shared federation secret. Fails closed when the secret is unset.
+    return verifyPayload(this.config.federationSecret, payload, payload.signature);
   }
 
   /**
@@ -617,7 +640,7 @@ class UAPServer {
     // Persist to chrome.storage (use in-memory log — no need to re-read)
     chrome.storage.local.set({ uapAuditLog: this.auditLog.slice(-10000) }, () => {
       if (chrome.runtime.lastError) {
-
+        console.warn('[UAP] Failed to persist audit log:', getErrorMessage(chrome.runtime.lastError));
       }
     });
   }
@@ -691,7 +714,8 @@ class UAPServer {
     // Clear state
     this.clients.clear();
     this.activeRuns.clear();
-
+    
+    console.log('[UAP] Server shut down');
   }
 }
 

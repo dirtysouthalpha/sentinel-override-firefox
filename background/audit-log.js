@@ -76,7 +76,7 @@ export async function getAuditLog(runId) {
     return Array.isArray(stored[key]) ? stored[key] : [];
   } catch (e) {
     /* storage read failed — return empty log rather than crashing */
-
+    console.warn('[Sentinel/audit-log] storage read failed:', getErrorMessage(e));
     return [];
   }
 }

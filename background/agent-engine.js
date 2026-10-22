@@ -4,6 +4,7 @@
 
 import { callLLMWithRetry, generatePlan as _generatePlan, getPlatformContext as _getPlatformContext, getRelevantPatterns as _getRelevantPatterns, selectModelForStep as _selectModelForStep, getCostTracker as _getCostTracker, cancelActiveLLM as _cancelActiveLLM, resetLLMFailStreak as _resetLLMFailStreak } from './llm-client.js';
 import { semanticFind } from './semantic-find.js';
+import { resolveStartTab, TAB_GATE } from './start-tab-gate.js';
 import { getPlatformProfile } from './platforms/index.js';
 import { waitForPageLoad, waitForPageReady, injectContentScript, sendMessageWithRetry, takeScreenshot, isValidUrl, getTabInfo, detachAllDebuggees, cdpDispatchClick, cdpDispatchDrag, cdpDispatchWheel, cdpDispatchZoom, cdpDispatchType, cdpDispatchKey, cdpExecuteJs, readConsoleMessages, readNetworkRequests } from './tab-manager.js';
 import { MAX_PAGE_TEXT_LENGTH, TEXT_SAMPLE_LENGTH as _TEXT_SAMPLE_LENGTH, MAX_CDP_RESULT_LENGTH, API_CACHE_TTL_MS, BATCH_MODE_CACHE_TTL_MS, MAX_WAIT_TIME_MS, ONE_HUNDRED_MS, ONE_HUNDRED_FIFTY_MS, TWO_HUNDRED_MS, THREE_HUNDRED_MS, FOUR_HUNDRED_MS, FIVE_HUNDRED_MS, SIX_HUNDRED_MS, EIGHT_HUNDRED_MS, ONE_SECOND_MS, TWO_SECONDS_MS, THREE_SECONDS_MS, FIVE_SECONDS_MS, TEN_SECONDS_MS, FIFTEEN_SECONDS_MS, TWENTY_SECONDS_MS, THIRTY_SECONDS_MS, FORTY_FIVE_SECONDS_MS, ONE_MINUTE_MS, FIVE_MINUTES_MS, ONE_HOUR_MS, ONE_DAY_MS } from './constants.js';
@@ -188,6 +189,7 @@ const ACTION_FAILED_TIMEOUT_RE = /^(Error|BLOCKED:|JS Error)|timed out| not foun
 // Precompile regex for page-mutating action detection (hot path in observation loop)
 const PAGE_MUTATING_ACTIONS_RE = /^(click|click_at|type|press_key|select|check|check_all)$/;
 
+
 // ═══════════════════════════════════════════════════════════════
 // v4.0 Vision Observe — discovers elements, draws SoM, returns indexed list
 // ═══════════════════════════════════════════════════════════════
@@ -203,6 +205,7 @@ async function _visionObserve(tab, _currentUrl) {
         indexedElements = Array.isArray(parsed) ? parsed : [];
       } catch (e) { console.warn('[Sentinel/v4] Element parse error:', getErrorMessage(e)); }
     }
+    console.log(`[Sentinel/v4] Discovered ${indexedElements.length} interactive elements`);
 
     // Step 2: Draw SoM overlay (numbered bounding boxes on canvas)
     try { await cdpExecuteJs(tab, VISION_SOM, { timeout: FIVE_SECONDS_MS }); }
@@ -224,7 +227,7 @@ async function _visionObserve(tab, _currentUrl) {
     const elementParts = [];
     for (const el of indexedElements) {
       const tag = el.tag || 'div';
-
+      // Template literal is more efficient than += concatenation in loop
       const hrefLen = el.href ? el.href.length : 0;
       // Cache substring and JSON.stringify results for performance
       const ariaLabel = el.ariaLabel ? el.ariaLabel.substring(0, 40) : '';
@@ -247,6 +250,7 @@ async function _visionObserve(tab, _currentUrl) {
     return { elements: [], elementTree: '', pageText: '' };
   }
 }
+
 
 import { sendSilentUpdate, sendActionMessage, sendActionResult, sendReportUpdate, sendPageContext, sendTabStateUpdate, sendScreenshotUpdate, sendAgentActivity, sendAgentStepStart, sendAgentStatus, sendHeartbeat, sendPlanPreview, sendClientKnowledgePreview, sendCostUpdate } from './message-protocol.js';
 import { generateReport, buildFallbackReport } from './report-generator.js';
@@ -276,6 +280,13 @@ import { synthesizeKnowledge, getSynthesisStatistics, clearSynthesis } from './k
 import { PredictiveEngine } from './predictive-engine.js';
 import { RuntimeProfiler } from './runtime-profiler.js';
 import { getErrorMessage, sleep } from './error-utils.js';
+import { verifiedClick, capturePageFingerprint } from './action-verifier.js';
+import { buildSearchPageJs, buildFindElementsJs, buildGetPageStructureJs, buildGetFormFieldsJs, buildGetTextContentJs } from './dom-tools.js';
+import { visionGroundedClick, selfHealingClick } from './vision-grounding.js';
+import { emitReasoningTrace, emitReflection, buildTraceSummary } from './reasoning-trace-upgrade.js';
+import { createTask, markStepComplete, markStepFailed, buildTaskContextSummary } from './task-tracker.js';
+import { buildEnhancedSystemPrompt } from './system-prompt-rules.js';
+import { buildFastModeSystemPrompt, parseFastModeResponse } from './vision-fast-mode.js';
 import { _tenantsMatch, detectMfaInText, detectSignInWall, evaluateHallucinationRisk, _countSummaryClaims, _countSpecificClaims, _countSourceTags } from './agent-security.js';
 // ========== Agent State ==========
 let agentRunning = false;
@@ -333,8 +344,11 @@ let _activeCanaryDeployment = null;       // Active canary deployment status (re
 let selfHealingEnabled = false;          // Self-healing system enabled
 let healingHistory = [];                 // Self-healing attempt history
 
+
 // Expose agentRunning for index.js
 export { agentRunning };
+// (A1 fix 3) Watchdog reads the pause state so paused runs never trip the stall detector.
+export function isAgentPaused() { return agentPaused; }
 
 /** Enqueue a user note to be injected into the LLM prompt on the next step. */
 export function injectContext(note) {
@@ -471,7 +485,7 @@ export async function restoreFromCheckpoint() {
       for (const [tabIdStr, url] of Object.entries(cp.tabContextUrls)) {
         const tabId = parseInt(tabIdStr, 10);
         if (typeof tabId !== 'number' || Number.isNaN(tabId) || tabId <= 0) {
-
+          console.warn('[Sentinel] Invalid tabId in checkpoint:', tabIdStr);
           continue;
         }
         if (typeof url === 'string') {
@@ -577,7 +591,7 @@ async function _updateRunLogIndex(runLogId, fields) {
     await chrome.storage.local.set({ [RUN_LOG_INDEX_KEY]: list });
   } catch (e) {
     // Storage write failed non-fatally
-
+    console.warn('[Sentinel] Run log index save failed:', getErrorMessage(e));
   }
 }
 
@@ -634,7 +648,12 @@ async function captureStepScreenshot(tabId) {
   try {
     const tab = await chrome.tabs.get(tabId);
     const windowId = tab.windowId;
-    const dataUrl = await chrome.tabs.captureVisibleTab(windowId, { format: 'jpeg', quality: 60 });
+    const dataUrl = await new Promise((resolve, reject) => {
+      chrome.tabs.captureVisibleTab(windowId, { format: 'jpeg', quality: 60 }, (result) => {
+        if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+        else resolve(result);
+      });
+    });
     return dataUrl; // base64 data URL
   } catch (_e) { return null; }
 }
@@ -744,7 +763,7 @@ async function persistHistory() {
     await chrome.storage.local.set({ agent_history: slice });
     _historyDirty = false;
   } catch (e) {
-
+    console.warn('[Sentinel] persistHistory storage write failed:', getErrorMessage(e));
   }
   try { tel.trace('storage', `agent_history persisted (${slice.length} entries)`, { entries: slice.length, totalInMemory: history.length }); } catch (e) { console.error('[Sentinel] Error in agent-engine.js:', getErrorMessage(e)); }
 }
@@ -944,7 +963,7 @@ async function _handleModeMismatchCheck(goal, modeDirective, runLogId, runLogBuf
     // step, so it will pick up the new value automatically.
     return { cancel: false };
   } catch (e) {
-
+    console.warn('[Sentinel] _handleModeMismatchCheck failed (non-fatal):', getErrorMessage(e));
     return { cancel: false };
   }
 }
@@ -956,76 +975,63 @@ async function _handleModeMismatchCheck(goal, modeDirective, runLogId, runLogBuf
  * @returns {Promise<string>} Status message on completion.
  * @throws {Error} If the agent is already running or no active tab is found.
  */
-export async function startAgent(goal, sender) {
-  if (typeof goal !== 'string' || !goal.trim()) throw new Error('Goal must be a non-empty string');
-  goal = goal.trim().substring(0, 4000);
+export async function startAgent(goal, sender, explicitTabId) {
+  // (A1 fix 2) agentRunning is CLAIMED synchronously — before the first await —
+  // so an unawaited startAgent() call wins the race against a second call
+  // (loop-paths double-start contract), and the guard hoisted above createTask
+  // stops refused starts from leaking tasks. Any pre-loop failure releases the
+  // claim; the loop body below owns the lifecycle from there on.
   if (agentRunning) throw new Error('Agent already running');
-
-  // Determine which tab to operate on
+  agentRunning = true;
   let startTabId;
-  if (!sender.tab || !sender.tab.id) {
-    const tabs = await new Promise(resolve => {
-      chrome.tabs.query({active: true, currentWindow: true}, (t) => {
-        if (typeof chrome.runtime.lastError === 'object' && chrome.runtime.lastError !== null) {
-          console.error('[startAgent] tabs.query failed:', chrome.runtime.lastError.message || String(chrome.runtime.lastError));
-          resolve([]);
-        } else {
-          resolve(t || []);
-        }
+  try {
+    // Create tracked task for this run (browser-use todo.md pattern).
+    try {
+      const _taskId = createTask(goal, []);
+      sender._taskId = _taskId;
+    } catch (_e) { /* non-fatal */ }
+    if (typeof goal !== 'string' || !goal.trim()) throw new Error('Goal must be a non-empty string');
+    goal = goal.trim().substring(0, 4000);
+
+    // Determine which tab to operate on — gated by start-tab-gate.js (A1 fix 2).
+    // Priority: explicit tabId (validated web page) > real content-tab sender >
+    // active web tab > SO-85/SO-85b recency fallback, refused while running.
+    startTabId = await (async () => {
+      const resolved = await resolveStartTab(sender, explicitTabId, {
+        getTabInfo,
+        // Dual-API adapter: real Chrome accepts callback or promise style, and
+        // unit mocks use either. Whichever settles first wins.
+        tabsQuery: (q) => new Promise(resolve => {
+          let settled = false;
+          const done = (t) => { if (!settled) { settled = true; resolve(t || []); } };
+          let ret;
+          try {
+            ret = chrome.tabs.query(q, (t) => {
+              if (typeof chrome.runtime.lastError === 'object' && chrome.runtime.lastError !== null) {
+                console.error('[startAgent] tabs.query failed:', chrome.runtime.lastError.message || String(chrome.runtime.lastError));
+                done([]);
+              } else {
+                done(t);
+              }
+            });
+          } catch (_qErr) { done([]); return; }
+          if (ret && typeof ret.then === 'function') ret.then((t) => done(t), () => done([]));
+        }),
+        // The synchronous claim above is THIS run's own; the hoisted guard
+        // already refused any second call, so the gate never sees "running".
+        isAgentRunning: () => false,
       });
-    });
-    if (Array.isArray(tabs) && tabs[0] != null && tabs[0].id) {
-      startTabId = tabs[0].id;
-      // (SO-85) Our own extension pages (popup/dashboard opened as a tab) are not a
-      // workspace: a run started against one observes SO's own UI and ends vacuously
-      // (planSteps 0, firstStep none, zero LLM calls). Fall back to the most recently
-      // accessed real web page; if none exists, fail with an actionable message.
-      const _startUrl = tabs[0].url || '';
-      if (_startUrl.startsWith('chrome-extension://')) {
-        const allTabs = await new Promise(resolve => {
-          chrome.tabs.query({}, (t2) => {
-            if (typeof chrome.runtime.lastError === 'object' && chrome.runtime.lastError !== null) { resolve([]); return; }
-            resolve(t2 || []);
-          });
-        });
-        const webTabs = allTabs.filter(t2 => /^https?:\/\//i.test(t2.url || ''))
-          .sort((a2, b2) => (b2.lastAccessed || 0) - (a2.lastAccessed || 0));
-        if (webTabs.length > 0) {
-          startTabId = webTabs[0].id;
-          console.info('[startAgent] Active tab is an extension page (SO-85): starting on', webTabs[0].url);
-        } else {
-          throw new Error('No active web page found. Open the site you want the agent to work on, then start the task.');
-        }
+      if (resolved.mode === TAB_GATE.EXT_PAGE_FALLBACK) {
+        console.info('[startAgent] Extension page sender (SO-85/SO-85b): starting on', resolved.url);
       }
-    } else {
-      throw new Error('No active tab found');
-    }
-  } else {
-    startTabId = sender.tab.id;
-    // (SO-85b) A popup/dashboard opened as a TAB sets sender.tab to our own
-    // extension page — same vacuous-run hazard as the SO-85 path above (the run
-    // observes SO's UI, plans zero steps, and the report writer hallucinates).
-    // Apply the same fallback: most recently accessed real web page wins.
-    const _senderUrl = (sender.tab && sender.tab.url) || '';
-    if (_senderUrl.startsWith('chrome-extension://')) {
-      const allTabs = await new Promise(resolve => {
-        chrome.tabs.query({}, (t2) => {
-          if (typeof chrome.runtime.lastError === 'object' && chrome.runtime.lastError !== null) { resolve([]); return; }
-          resolve(t2 || []);
-        });
-      });
-      const webTabs = allTabs.filter(t2 => /^https?:\/\//i.test(t2.url || ''))
-        .sort((a2, b2) => (b2.lastAccessed || 0) - (a2.lastAccessed || 0));
-      if (webTabs.length > 0) {
-        startTabId = webTabs[0].id;
-        console.info('[startAgent] Sender tab is an extension page (SO-85b): starting on', webTabs[0].url);
-      } else {
-        throw new Error('No active web page found. Open the site you want the agent to work on, then start the task.');
-      }
-    }
+      return resolved.tabId;
+    })();
+  } catch (_preLoopErr) {
+    // Pre-loop failure: the run never started, release the synchronous claim.
+    agentRunning = false;
+    throw _preLoopErr;
   }
 
-  agentRunning = true;
   _runStartTime = Date.now();
   // Persist running state so SW restarts can detect an interrupted run
   try { await chrome.storage.session.set({ agentRunning: true, agentGoal: goal, agentStartTime: _runStartTime }); } catch(_sessionErr) {
@@ -1183,6 +1189,7 @@ export async function startAgent(goal, sender) {
   return 'Agent started in background';
 }
 
+
 // (3.15.2) Goal mode-directive detection. MSP technicians often write "Mode:
 // APPROVAL" or "agent pauses for technician approval before each click" in the
 // goal text to express intent. But the actual approval gating is driven by
@@ -1308,7 +1315,7 @@ export async function stopAgent() {
   // when the loop exits via the flag check with no exception raised.
   try {
     runLogBuffer.push({ step: 0, timestamp: new Date().toISOString(), kind: 'run_stopped_by_user', text: 'Run stopped by user.' });
-    if (runLogId) chrome.storage.local.set({ [`run_log_${runLogId}`]: { goal: (typeof goal !== 'undefined' && goal) ? goal : '', runLogId, entries: runLogBuffer, lastUpdate: Date.now() } }).catch(() => {});
+    if (runLogId) chrome.storage.local.set({ [`run_log_${runLogId}`]: { goal: (_lastGoal || ''), runLogId, entries: runLogBuffer, lastUpdate: Date.now() } }).catch(() => {});
   } catch (_e) { /* best-effort: record stamping must never break the stop */ }
   // Release any CDP attachments held by the screenshot pipeline.
   try { await detachAllDebuggees(); } catch (e) { console.error('[Sentinel] Error in agent-engine.js:', getErrorMessage(e)); }
@@ -1522,6 +1529,7 @@ function detectStall(history, consecutiveFailures, _currentStrategies) {
   return { stalled: false };
 }
 
+
 // ========== Tab Group Attachment (3.7.2) ==========
 // Visually link every tab the agent operates on into an orange "Sentinel"
 // tab group, so the user sees a clear glowing strip above attached tabs in
@@ -1552,7 +1560,7 @@ async function attachTabToSentinelGroup(tabId) {
         await chrome.tabs.group({ tabIds: [tabId], groupId: agentTabGroupId });
       } catch (e) {
         // Group may have been dissolved by the user — recreate.
-
+        console.warn('[Sentinel] Tab group failed, recreating:', getErrorMessage(e));
         const groupId = await chrome.tabs.group({ tabIds: [tabId] });
         agentTabGroupId = groupId;
         try {
@@ -1571,7 +1579,7 @@ async function attachTabToSentinelGroup(tabId) {
     } catch (e) { console.warn('[Sentinel] Side panel enable failed (API unavailable?):', getErrorMessage(e)); }
     // (SO-91) This attached tab keeps the panel; everything else stays scoped out.
   } catch (e) {
-
+    console.warn('[Sentinel] attachTabToSentinelGroup failed:', getErrorMessage(e));
   }
 }
 
@@ -1689,7 +1697,7 @@ async function _cdpObservePage(tabId) {
       }
     }
   } catch(e) {
-
+    console.warn('[Sentinel/CDP] Ready check failed:', getErrorMessage(e));
   }
 
   const code = 'var results = { elements: [], text: "", overlays: [] };'
@@ -1879,21 +1887,21 @@ async function _cdpDismissOverlays(tabId, overlays) {
         const integrityCheck = await cdpExecuteJs(tabId, 'return { hasBody: !!document.body, title: document.title || "", url: window.location.href };', { timeout: THREE_SECONDS_MS });
         if (integrityCheck && integrityCheck.ok && integrityCheck.value) {
           if (!integrityCheck.value.hasBody || !integrityCheck.value.title) {
-
+            console.warn('[Sentinel/CDP] Nuke destroyed page content — reloading via CDP...');
             try {
               await chrome.debugger.sendCommand({ tabId: tabId }, 'Page.reload', { ignoreCache: true });
               await new Promise(r => setTimeout(r, TWO_SECONDS_MS));
             } catch(reloadErr) {
-
+              console.warn('[Sentinel/CDP] Reload failed:', getErrorMessage(reloadErr));
             }
           }
         }
       }
     } else {
-
+      console.warn('[Sentinel/CDP] Phase2 FAILED. error:', (typeof nukeResult === 'object' && nukeResult !== null && typeof nukeResult.error === 'string' ? nukeResult.error : String(nukeResult?.error || 'unknown')));
     }
   } catch(e) {
-
+    console.warn('[Sentinel/CDP] Phase2 threw:', getErrorMessage(e));
   }
 
   // Phase 3: Quick scroll test (only if overlays were found)
@@ -1912,6 +1920,7 @@ let _lastNukeClean = false; // Track if last nuke found nothing to remove
 let _pageWasReady = false; // Skip ready check if previous observe succeeded
 let _cachedObservation = null; // { url, elementsCount, textLen, elements, text, timestamp }
 let _observeCacheHits = 0;
+
 
 // ═══════════════════════════════════════════════════════════════
 // Coordinate-based click fallback — uses CDP Input.dispatchMouseEvent
@@ -2025,6 +2034,7 @@ function _findElementByDescription(elements, description) {
   return null;
 }
 
+
 /**
  * Get all tab IDs currently attached to the agent session.
  * @returns {number[]} Array of Chrome tab IDs.
@@ -2070,6 +2080,7 @@ const _ABOUT_RE = /(?:about|on|regarding)\s+([^,.\n]{10,60})/i;
 const _COUNT_RE = /(?:top\s+)?(\d+)/;
 const ARTICLE_RE = /\b(?:top|first|best|recent)\s+(\d{1,2})\s+(articles?|stories|posts?|items?|headlines?|results?)\b/i;
 const ARTICLE_KEY_RE = /article[_\s]?\d/i;
+
 
 function isConfigChangeGoal(goal, currentUrl) {
   const text = String(goal || '');
@@ -2509,6 +2520,7 @@ function _hostnameOf(url) {
   try { return new URL(url).hostname; } catch (e) { console.error('[Sentinel] Error in agent-engine.js:', getErrorMessage(e)); return ''; }
 }
 
+
 // ========== CAPTCHA / Bot Detection (v3.65) ==========
 const CAPTCHA_URL_PATTERNS = [
   /validateCaptcha/i,
@@ -2667,6 +2679,7 @@ function _generateSmartRecovery(goal, currentUrl, pageText, _observation, _histo
   return strategies;
 }
 
+
 // ═══════════════════════════════════════════════════════════════════
 // (v3.69) Universal CDP Fallback Engine — "Nothing Stops the Agent"
 // When content script is dead AND per-action CDP fallbacks fail,
@@ -2711,6 +2724,15 @@ async function _universalCdpFallback(tab, cmd, opts) {
     case 'double_click':
     case 'triple_click_at':
     case 'right_click': {
+      // Emit reasoning trace before action (ReAct pattern)
+      try {
+        emitReasoningTrace(
+          `Clicking element: ${cmd.ref || cmd.selector || 'unknown'}`,
+          cmd.type,
+          { ref: cmd.ref, selector: cmd.selector },
+          (opts && opts.stepCount) || 0
+        );
+      } catch (_e) { /* non-fatal */ }
       var btn = cmd.type === 'right_click' ? '2' : '0';
       var detail = cmd.type === 'triple_click_at' ? '3' : (cmd.type === 'double_click' ? '2' : '1');
       jsCode = '(function(){'
@@ -2724,6 +2746,15 @@ async function _universalCdpFallback(tab, cmd, opts) {
       break;
     }
     case 'type': {
+      // Emit reasoning trace before action
+      try {
+        emitReasoningTrace(
+          `Typing text into element: ${cmd.ref || cmd.selector || 'unknown'}`,
+          'type',
+          { ref: cmd.ref, selector: cmd.selector },
+          (opts && opts.stepCount) || 0
+        );
+      } catch (_e) { /* non-fatal */ }
       var safeText = escapeJsString(cmd.text || '', '"');
       jsCode = '(function(){'
         + `var el=${finderCode};`
@@ -2868,6 +2899,7 @@ async function _universalCdpFallback(tab, cmd, opts) {
   return { ok: false, result: 'UFB returned no result' };
 }
 
+
 async function recoverFromCaptcha(tab, captchaInfo, currentUrl, goal, stepCount = 0) {
   // Strategy 1: Try to click CAPTCHA checkbox/button via CDP
   try {
@@ -2906,7 +2938,7 @@ async function recoverFromCaptcha(tab, captchaInfo, currentUrl, goal, stepCount 
       return 'solved';
     }
   } catch (e) {
-
+    console.warn('[Sentinel/CAPTCHA] Auto-solve attempt failed:', getErrorMessage(e));
   }
   
   // Strategy 2: Navigate to an alternative URL for the same site
@@ -2925,7 +2957,7 @@ async function recoverFromCaptcha(tab, captchaInfo, currentUrl, goal, stepCount 
           try { tel.trace('sleep', 'Sleep 3000ms', { ms: THREE_SECONDS_MS }); } catch (e) { console.error('[Sentinel] Error in agent-engine.js:', getErrorMessage(e)); }
           await sleep(THREE_SECONDS_MS);
         } catch (_navErr) {
-
+          console.warn('[Sentinel/CAPTCHA] Navigate to search URL failed:', getErrorMessage(_navErr));
         }
         return 'bypassed';
       }
@@ -2936,7 +2968,7 @@ async function recoverFromCaptcha(tab, captchaInfo, currentUrl, goal, stepCount 
         try { tel.trace('sleep', 'Sleep 3000ms', { ms: THREE_SECONDS_MS }); } catch (e) { console.error('[Sentinel] Error in agent-engine.js:', getErrorMessage(e)); }
         await sleep(THREE_SECONDS_MS);
       } catch (_navErr) {
-
+        console.warn('[Sentinel/CAPTCHA] Navigate to homepage failed:', getErrorMessage(_navErr));
       }
       return 'bypassed';
     }
@@ -2950,12 +2982,15 @@ async function recoverFromCaptcha(tab, captchaInfo, currentUrl, goal, stepCount 
     await sleep(TWO_SECONDS_MS);
     return 'went_back';
   } catch (e) {
-
+    console.warn('[Sentinel/CAPTCHA] Go back failed:', getErrorMessage(e));
   }
   
   // Strategy 4: Pause for user
   return 'needs_user';
 }
+
+
+
 
 // ========== v3.13.0 Auto-Recovery Helpers ==========
 // Engine-side reliability layer. The LLM is good at "what's the next step";
@@ -3234,6 +3269,7 @@ function _detectActionTypeLoop(history, _agentMemory) {
   return { isLoop: false };
 }
 
+
 // ========== Run Setup Helpers ==========
 
 // Load run-stable settings, initialize module-level state, and return the
@@ -3249,7 +3285,7 @@ async function _initRunState(goal) {
       'quickMode',
     ]);
   } catch (e) {
-
+    console.warn('[Sentinel] runAgentLoop settings load failed:', getErrorMessage(e));
     stored = {};
   }
   _runSettings = {
@@ -3267,7 +3303,7 @@ async function _initRunState(goal) {
   try {
     await chrome.storage.local.set({ agent_history: [] });
   } catch (e) {
-
+    console.warn('[Sentinel] agent_history clear failed:', getErrorMessage(e));
   }
   // v10.0: Initialize intelligence systems for each new run
   try {
@@ -3279,9 +3315,9 @@ async function _initRunState(goal) {
       clearNoveltyHistory(),
       clearSynthesis()
     ]);
-
+    console.log('[Sentinel] Intelligence systems initialized');
   } catch (e) {
-
+    console.warn('[Sentinel] Intelligence systems initialization failed:', getErrorMessage(e));
   }
   if (stored.agent_context && stored.agent_context.trim()) {
     return `Previous context: ${stored.agent_context.trim()}\n\nCurrent goal: ${goal}`;
@@ -3380,9 +3416,11 @@ function narratePageState(pageContext) {
   return parts.length > 0 ? parts.join(' · ') : 'Page loaded.';
 }
 
+
 // ========== Main Agent Loop ==========
 async function runAgentLoop(goal, workingTabId) {
-
+  console.log('[Sentinel] Agent starting loop for goal:', goal);
+  console.log('[Sentinel/Loop] Agent loop entered. goal="' + (goal||'').substring(0,60) + '" tabId=' + workingTabId);
   _lastGoal = goal || '';
   startRunRecording(workingTabId, goal);
   let finished = false;
@@ -3410,10 +3448,10 @@ async function runAgentLoop(goal, workingTabId) {
   try {
     agentPlan = await _generateInitialPlan(goal, workingTabId, _runSettings);
   } catch (e) {
-
+    console.warn('[Sentinel] _generateInitialPlan failed (non-fatal), running without plan:', getErrorMessage(e));
     agentPlan = null;
   }
-
+  console.log('[Sentinel/Loop] Plan generated. Steps: ' + (agentPlan ? agentPlan.length : 'none'));
   try { sendPlanPreview(agentPlan, agentPlan && agentPlan.length); } catch (_e) {
     // Plan preview send failed non-fatally
   }
@@ -3438,7 +3476,7 @@ async function runAgentLoop(goal, workingTabId) {
   _predictiveAnalysisEnabled = true;
   selfHealingEnabled = true;
   RuntimeProfiler.start();
-
+  console.log('[Sentinel Phase 5] Runtime profiling started');
   const _profilingInterval = 10; // Take sample every 10 steps
 
   let command;
@@ -3502,9 +3540,9 @@ async function runAgentLoop(goal, workingTabId) {
       if (profilingEnabled && stepCount % _profilingInterval === 0) {
         try {
           RuntimeProfiler.sample();
-
+          console.log('[Sentinel Phase 5] Profiling sample taken at step', stepCount);
         } catch (e) {
-
+          console.warn('[Sentinel Phase 5] Profiling sample failed:', getErrorMessage(e));
         }
       }
       
@@ -3527,7 +3565,7 @@ async function runAgentLoop(goal, workingTabId) {
       const dynamicMaxSteps = Math.min(300, dynamicBaseline + (productiveSteps * 25));
       // (3.36.1) Hotfix — telemetry emit moved AFTER `const dynamicMaxSteps`
       // declaration. Previously this line was above the const and tripped a
-
+      // temporal-dead-zone ReferenceError every step on the first iteration,
       // hanging every run. The "let dynamicMaxSteps" in the outer block-scope
       // is in TDZ until the line that initializes it runs, so the previous
       // ordering blew up before any LLM call could fire.
@@ -3614,6 +3652,7 @@ async function runAgentLoop(goal, workingTabId) {
           break;
         }
       }
+
 
       // Validate tabInfo.url before using it (needed for navigation checks below)
       if (!tabInfo.url) {
@@ -3751,7 +3790,7 @@ async function runAgentLoop(goal, workingTabId) {
       if (consecutiveInjectionFailures < 3) {
         scriptReady = await injectContentScript(tab);
       } else {
-
+        console.warn(`[Sentinel/SPEED] Skipping content script injection (${consecutiveInjectionFailures} failures)`);
       }
       _cdpFallbackActive = false;
       if (!scriptReady) {
@@ -3761,16 +3800,16 @@ async function runAgentLoop(goal, workingTabId) {
         // (v3.54) CDP Fallback: bypass CSP by using Chrome DevTools Protocol directly.
         // After 2 failures, switch to CDP mode — observe, dismiss overlays, read page.
         if (consecutiveInjectionFailures >= 2) {
-
+          console.warn(`[Sentinel] Content script failed ${consecutiveInjectionFailures} times — activating CDP fallback`);
           _cdpFallbackActive = true;
           // (v3.57) On first CDP activation, check if page has any DOM at all.
           // If empty (no body, no title), reload the page via CDP.
           if (consecutiveInjectionFailures === 2) {
             try {
               const pgCheck = await cdpExecuteJs(tab, 'return{hasBody:!!document.body,children:(document.body||document.documentElement).childNodes.length,title:document.title||"",url:window.location.href};', { timeout: THREE_SECONDS_MS });
-
+              console.log('[Sentinel/CDP] Page check on first CDP activation: hasBody=%s children=%d', !!(pgCheck && pgCheck.value && pgCheck.value.hasBody), (pgCheck && pgCheck.value && pgCheck.value.children) || 0);
               if (pgCheck && pgCheck.ok && pgCheck.value && (!pgCheck.value.hasBody || (pgCheck.value.children === 0 && !pgCheck.value.title))) {
-
+                console.log('[Sentinel/CDP] Page has no DOM — reloading via CDP Page.reload...');
                 await chrome.debugger.sendCommand({ tabId: tab }, 'Page.reload', { ignoreCache: true });
                 await new Promise(r => setTimeout(r, TWO_SECONDS_MS));
               }
@@ -3796,7 +3835,7 @@ async function runAgentLoop(goal, workingTabId) {
           const allFailed = recentActionEntries.every(h => h.actionFailed);
           if (allSame && allFailed) {
             const stuckAction = lastActionTypes[0];
-
+            console.warn(`[Sentinel/stuck] Detected stuck loop: ${stuckAction} failed ${lastActionTypes.length} times`);
             // Inject a forced recovery note into history
             historyPush({
               role: 'user',
@@ -3924,18 +3963,18 @@ async function runAgentLoop(goal, workingTabId) {
             ]);
           } catch (parallelErr) {
             // If parallel observation fails, fall back to sequential with better error recovery
-
+            console.warn('[Sentinel/agent] Parallel observation failed, falling back to sequential:', getErrorMessage(parallelErr));
             try {
               observation = await sendMessageWithRetry(tab, { action: 'observe_page' });
             } catch (obsErr) {
               observation = { elements: [] };
-
+              console.warn('[Sentinel/agent] Sequential observe_page failed:', getErrorMessage(obsErr));
             }
             try {
               pageContent = await sendMessageWithRetry(tab, { action: 'read_page' });
             } catch (readErr) {
               pageContent = { content: '' };
-
+              console.warn('[Sentinel/agent] Sequential read_page failed:', getErrorMessage(readErr));
             }
           }
           }
@@ -3996,7 +4035,7 @@ async function runAgentLoop(goal, workingTabId) {
           // loop and spinning forever (especially when injection keeps succeeding but
           // observe keeps failing, which would reset consecutiveInjectionFailures to 0
           // and keep the old `< 3` guard from ever breaking the cycle).
-
+          console.warn('[Sentinel] Observe failed (sendMessageWithRetry exhausted) — using empty observation so LLM can navigate away');
           observation = { elements: [] };
           pageContent = { content: '' };
         }
@@ -4033,7 +4072,7 @@ async function runAgentLoop(goal, workingTabId) {
         // If still null after re-registration, create a minimal context and
         // proceed — never spin-loop here as it would keep apiCallCount at 0.
         if (!tabCtx) {
-
+          console.warn('[Sentinel] tabCtx still null after re-register — creating minimal context for tab', tab);
           try { registerInitialTab(tab, currentUrl); } catch (_e) {
           // Tab registration failed non-fatally during recovery
         }
@@ -4080,7 +4119,7 @@ async function runAgentLoop(goal, workingTabId) {
         }
       } catch (shotErr) {
         // Screenshot failure is non-fatal — continue to LLM call without image.
-
+        console.warn('[Sentinel] Screenshot failed, continuing without image:', getErrorMessage(shotErr));
         base64Image = null;
         screenshotMeta = null;
       }
@@ -4485,7 +4524,7 @@ async function runAgentLoop(goal, workingTabId) {
       // v4.0: Vision-first ALWAYS active
       {
         try {
-
+          console.log('[Sentinel/v4] Vision observation starting...');
           const visionResult = await _visionObserve(tab, currentUrl);
           if (visionResult.elements.length) {
             _visionElements = visionResult.elements;
@@ -4514,10 +4553,10 @@ async function runAgentLoop(goal, workingTabId) {
             // Enhance vision elements with visual descriptions
             enhanceWithVisualProperties(trimmedElements);
             allElements = [...trimmedElements]; // reassign (not mutate) so cached observation.elements stays intact
-
+            console.log(`[Sentinel/v4] Vision: ${_visionElements.length} indexed elements`);
           }
         } catch (e) {
-
+          console.warn('[Sentinel/v4] Vision observe failed:', e);
         }
       }
       // Build step context for multi-provider model routing
@@ -4695,7 +4734,7 @@ async function runAgentLoop(goal, workingTabId) {
               temperature: 0.1
             });
           } catch (_stringifyErr) {
-
+            console.warn('[Sentinel/v4] Vision payload serialization failed:', getErrorMessage(_stringifyErr));
             break; // Exit vision mode on serialization failure
           }
           try {
@@ -4715,13 +4754,13 @@ async function runAgentLoop(goal, workingTabId) {
             clearTimeout(_vTimeoutId);
           }
           if (_vResponse && !_vResponse.ok) {
-
+            console.warn('[Sentinel/v4] Vision LLM non-ok response:', _vResponse.status);
           } else if (_vResponse && _vResponse.ok) {
             let _vData;
             try {
               _vData = await _vResponse.json();
             } catch (_jsonErr) {
-
+              console.warn('[Sentinel/v4] Vision LLM response not JSON:', _vResponse.status);
               _vData = null; // Explicitly mark as failed
               // Don't break - let the null check on line 4433 handle it
             }
@@ -4790,14 +4829,14 @@ async function runAgentLoop(goal, workingTabId) {
                 if (command && typeof command === 'object') command.__reasoning = _vParsed.thinking.substring(0, 600);
               }
               if (!command || !command._visionUnknown) globalThis.__soVisionUnknownStreak = 0;
-
+              console.log('[Sentinel/v4] Vision decided:', _va.type, 'index:', _va.index || 'N/A');
             } else {
               // Fallback: couldn't parse structured output, try the legacy LLM path
-
+              console.warn('[Sentinel/v4] Vision: could not parse structured output, falling back to legacy');
             }
           }
         } catch (e) {
-
+          console.warn('[Sentinel/v4] Vision LLM call failed, falling back:', getErrorMessage(e));
           try { await cdpExecuteJs(tab, VISION_CLEAR, { timeout: THREE_SECONDS_MS }); } catch (_e) { /* vision cleanup failed - non-fatal */ }
         }
       }
@@ -4836,11 +4875,11 @@ async function runAgentLoop(goal, workingTabId) {
           const contradictionCheck = analyzeForContradictions(historyText);
           if (contradictionCheck.hasContradictions) {
             logContradictionDetection(contradictionCheck, stepCount);
-
+            console.warn('[Sentinel] Contradictions detected in prompt history:', contradictionCheck);
           }
         }
         try {
-
+          console.log('[Sentinel/Loop] Calling LLM for step ' + (stepCount+1) + '...');
           command = await callLLMWithRetry(
             trimmedElements, allElements.length, pageText, base64Image,
             goal, promptHistory, stepCount, currentUrl,
@@ -4848,7 +4887,7 @@ async function runAgentLoop(goal, workingTabId) {
             CONFIG,
             agentState
           );
-
+          console.log('[Sentinel/Loop] LLM responded. Type: ' + (command ? command.type : 'null'));
           // v10.0: Capture reasoning result and analyze for bias
           await captureReasoningStep('action_decision', 'output', {
             commandType: command?.type || 'none',
@@ -4859,7 +4898,7 @@ async function runAgentLoop(goal, workingTabId) {
           if (command && command.type) {
             const actionBiasAnalysis = analyzeActionForBias(command);
             if (actionBiasAnalysis.hasBias && shouldTriggerBiasWarning(actionBiasAnalysis)) {
-
+              console.warn('[Sentinel] Action bias detected:', actionBiasAnalysis);
               logBiasDetection(actionBiasAnalysis, stepCount);
             }
             // Store action in knowledge graph
@@ -4871,7 +4910,7 @@ async function runAgentLoop(goal, workingTabId) {
                 source: 'agent'
               });
             } catch (e) {
-
+              console.warn('[Sentinel] Failed to store action in knowledge graph:', getErrorMessage(e));
             }
           }
         } catch (e) {
@@ -4929,7 +4968,7 @@ async function runAgentLoop(goal, workingTabId) {
           } catch (_e) { /* non-fatal */ }
           // v4.0: Clear SoM overlay so it doesn't interfere with action execution
           try { await cdpExecuteJs(tab, VISION_CLEAR, { timeout: THREE_SECONDS_MS }); } catch(e) {
-
+            console.warn('[Sentinel] Failed to clear SoM overlay:', getErrorMessage(e));
             // Non-fatal but could affect next action execution
           }
           base64Image = null; // release screenshot memory after LLM call
@@ -4971,6 +5010,7 @@ async function runAgentLoop(goal, workingTabId) {
         delete command.advance_plan;
       }
 
+      // Template substitution: replace ::key:: with memory values
       if (typeof command.text === 'string') {
         command.text = command.text.replace(MEMORY_VAR_RE, (_, key) => agentMemory[key] || `::${key}::`);
       }
@@ -5013,7 +5053,7 @@ async function runAgentLoop(goal, workingTabId) {
         const refExists = trimmedElements.some(e => e.ref === command.ref);
         if (!refExists) {
           try {
-
+            console.warn(`[agent-engine] LLM returned unknown ref "${command.ref}" not in latest observation. Content script will fall back to selector if available.`);
           } catch (e) { console.warn('[Sentinel] unknown ref logging failed:', getErrorMessage(e)); }
         }
       }
@@ -5094,6 +5134,7 @@ async function runAgentLoop(goal, workingTabId) {
           continue;
         }
 
+
         // (3.50.0) Multi-article completion guard: don't let the agent finish
         // with just link lists — it must actually OPEN and READ the articles.
         try {
@@ -5106,7 +5147,7 @@ async function runAgentLoop(goal, workingTabId) {
             );
             // Block: haven't opened ANY article tabs AND no summaries written
             if (_openTabs === 0 && !_summaryKeys.length && noteCount === 0) {
-
+              console.warn('[Sentinel/multi-article] Blocking premature finish —', _targetN, 'articles requested, 0 opened/read');
               historyPush({ step: stepCount, action: command, result: `BLOCKED: premature finish — goal asks for ${_targetN} articles. Must open_tab article URLs and read each page before finishing.` });
               await persistHistory();
               sendSilentUpdate('Finish blocked — must read articles first', stepCount);
@@ -5725,6 +5766,8 @@ async function runAgentLoop(goal, workingTabId) {
         continue;
       }
 
+
+
       sendAgentStatus('executing', describeAction(command));
       emitAgentStatus(workingTabId, 'executing', describeAction(command));
       // (3.50.0) Update the in-page action HUD so the user can see what's happening
@@ -5844,7 +5887,7 @@ async function runAgentLoop(goal, workingTabId) {
                   await new Promise(r => setTimeout(r, 30));
                   await chrome.debugger.sendCommand({ tabId: tab }, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x: _cx, y: _cy, button: 'left', clickCount: 1 });
                   result = `Clicked [${command._visionIndex}] at (${_cx},${_cy})${_liveRect ? ' [live-rect]' : ' [cached-rect]'}`;
-
+                  console.log('[Sentinel/v4]', result);
                   _cdpClickOk = true;
                 } catch (_cme) { /* fall through to JS .click() */ }
 
@@ -5890,7 +5933,7 @@ async function runAgentLoop(goal, workingTabId) {
                   actionFailed = true;
                 } else {
                   result = `Typed into [${command._visionIndex}]: ${_typeVal || 'unknown'}`;
-
+                  console.log('[Sentinel/v4]', result);
                 }
               } catch (_te) {
                 result = `Type failed for [${command._visionIndex}]`;
@@ -5944,13 +5987,13 @@ async function runAgentLoop(goal, workingTabId) {
         const batchActions = command.actions.filter(a => a && a.type);
         const batchLen = batchActions.length;
         if (batchLen) {
-
+          console.log(`[Sentinel/SPEED] Batch: queuing ${batchLen} actions`);
           // Push in reverse so shift() gets them in order
           for (let i = batchLen - 1; i >= 0; i--) {
             _pendingCommandQueue.unshift(batchActions[i]);
           }
           command = _pendingCommandQueue.shift();
-
+          console.log(`[Sentinel/SPEED] Batch: executing first action: ${command.type}`);
         } else {
           result = 'Batch contained no valid actions';
           actionFailed = true;
@@ -5972,7 +6015,7 @@ async function runAgentLoop(goal, workingTabId) {
         else if (/^(twitter|x)$/.test(site)) smartUrl = `https://x.com/search?q=${q}`;
         if (smartUrl) {
           command = { type: 'navigate', url: smartUrl };
-
+          console.log(`[Sentinel/SPEED] smart_navigate → ${smartUrl}`);
         } else {
           // Fallback to Google
           command = { type: 'navigate', url: `https://www.google.com/search?q=${q}` };
@@ -6043,7 +6086,7 @@ async function runAgentLoop(goal, workingTabId) {
               const _arrivedPath = new URL(_arrivedUrl).pathname.replace(TRAILING_SLASH_RE, '');
               if (_intendedPath !== _arrivedPath) {
                 result += ` — WARNING: redirected to ${_arrivedUrl}. The page may not contain the expected content. Check the URL and try a different link.`;
-
+                console.warn('[Sentinel/open_tab] URL mismatch. Intended:', command.url, 'Arrived:', _arrivedUrl);
               }
             } catch (_urlE) { /* non-standard URL (e.g. chrome://newtab) — skip path comparison */ }
           }
@@ -6279,7 +6322,7 @@ async function runAgentLoop(goal, workingTabId) {
             try {
               await chrome.storage.local.set({ agent_memory: agentMemory });
             } catch (e) {
-
+              console.warn('[Sentinel] agent_memory storage write failed (extract):', getErrorMessage(e));
             }
             // (3.25.1) Telemetry: memory write from extract/extract_list. Lets
             // the operator watch memory grow in real time and catch keys that
@@ -6321,7 +6364,7 @@ async function runAgentLoop(goal, workingTabId) {
         //   strategy: 'all_failed'            -> surface error to LLM
         const ladder = await _runExecuteJsWithRetryLadder(tab, command.code || '', command.timeout);
         if (ladder.strategy !== 'original') {
-
+          console.log('[Sentinel] execute_js auto-recovered via:', ladder.strategy);
           // Append a hint to the result so the LLM knows which strategy
           // succeeded. Helps it adapt subsequent extractions on this page.
           ladder.raw = `${ladder.raw}\n\n[ENGINE NOTE: original execute_js was unproductive; auto-recovered via ${ladder.strategy} strategy. The data above is from ${ladder.strategy === 'body_text_fallback' ? 'document.body.innerText' : 'aggregated visible-element text'}. Parse it with regex/string ops in your finish summary.]`;
@@ -6388,7 +6431,7 @@ async function runAgentLoop(goal, workingTabId) {
               try {
                 await chrome.storage.local.set({ agent_memory: agentMemory });
               } catch (e) {
-
+                console.warn('[Sentinel] agent_memory storage write failed (execute_js):', getErrorMessage(e));
               }
               // (3.25.1) Telemetry: memory write from execute_js. Tagged with
               // the recovery ladder strategy so operators can see when an
@@ -6524,10 +6567,10 @@ return { ok: true, value: el.value };
                 cdpDone = true;
                 sendSilentUpdate(`[CDP] Selected ${command.value} in ${command.selector || 'dropdown'}`, stepCount);
               } else {
-
+                console.warn('[CDP] Select failed:', selResult);
               }
             } catch (selErr) {
-
+              console.warn('[CDP] Select error:', getErrorMessage(selErr));
             }
           } else if (command.type === 'scroll_at') {
             // (SO-90) Trusted wheel scroll — reaches inner scrollable panes and
@@ -6549,7 +6592,7 @@ return { ok: true, value: el.value };
                 result = `Scrolled ${_saDir} ${_saAmt}px (JS fallback — wheel dispatch failed: ${_wheelRes.error})`;
                 cdpDone = true;
               } else {
-
+                console.warn('[CDP] dispatchWheel failed:', _wheelRes.error);
               }
             }
           } else if (command.type === 'triple_click_at') {
@@ -6561,11 +6604,11 @@ return { ok: true, value: el.value };
               result = `Triple-clicked at (${Math.round(_tpX)},${Math.round(_tpY)}) via CDP`;
               cdpDone = true;
             } else {
-
+              console.warn('[CDP] triple_click failed, falling back:', _tcRes.error);
             }
           }
         } catch (err) {
-
+          console.warn('[CDP] dispatch threw, falling back:', getErrorMessage(err));
         }
         if (!cdpDone) {
           // CDP path failed -- fall back to the synthetic content-script path.
@@ -6634,10 +6677,10 @@ return { ok: true, value: el.value };
                 result = `JS Result: ${valStr}`;
                 actionFailed = false;
               } else if (cdpResult && !cdpResult.attachDenied && cdpResult.error) {
-
+                console.warn('[CDP] execute_js failed, falling back:', (typeof cdpResult === 'object' && cdpResult !== null && typeof cdpResult.error === 'string' ? cdpResult.error : String(cdpResult?.error || 'unknown')));
               }
             } catch (e) {
-
+              console.warn('[CDP] execute_js threw, falling back:', getErrorMessage(e));
             }
             if (!cdpUsed) {
               const res = await sendMessageWithRetry(tab, { action: 'execute_command', command });
@@ -6800,13 +6843,13 @@ return { ok: true, value: el.value };
             result = _ufbResult.result || 'Executed via universal CDP fallback';
             actionFailed = false;
             sendSilentUpdate(`[CDP-UFB] ${command.type} success`, stepCount);
-
+            console.log('[Sentinel/UFB] Universal fallback succeeded for', command.type);
           } else if (_ufbResult && _ufbResult.result) {
             result = _ufbResult.result;
             // Don't mark success but LLM gets useful feedback about what happened
           }
         } catch (_ufbErr) {
-
+          console.warn('[Sentinel/UFB] Universal fallback error:', getErrorMessage(_ufbErr));
         }
       }
 
@@ -6978,14 +7021,14 @@ return { ok: true, value: el.value };
             };
             const healingResult = RuntimeProfiler.heal(issue);
             if (healingResult.healed) {
-
+              console.log('[Sentinel Phase 5] Self-healing successful:', healingResult.strategy);
               healingHistory.push(healingResult);
               consecutiveFailures = 0; // Reset after successful heal
             } else {
-
+              console.warn('[Sentinel Phase 5] Self-healing failed:', healingResult.reason);
             }
           } catch (e) {
-
+            console.warn('[Sentinel Phase 5] Self-healing error:', getErrorMessage(e));
           }
         }
         
@@ -7060,7 +7103,8 @@ return { ok: true, value: el.value };
       // v3.68: Trigger on 2 repeats (not 3), cover ALL action types, and be more specific
       if (_sameCmdCount >= 2 && !LOOP_EXCLUDE_TYPES.has(command.type)) {
         const _pageUnchanged = currentUrl === (_lastLoopUrl || '');
-
+        console.warn(`[Sentinel/RECOVERY] Same-command loop:`, command.type, `used ${_sameCmdCount + 1} times. Page unchanged:`, _pageUnchanged);
+        // Template literal more efficient than repeated += concatenation
         // (v3.69) Smart Recovery: generate site-specific strategies
         const _smartStrats = _generateSmartRecovery(goal, currentUrl, pageText, observation, history, stepCount);
         const _smartStratMsg = _smartStrats.length ? `SMART STRATEGIES for this page:\n${_smartStrats.map(s => `→ ${s}`).join('\n')}\n` : '';
@@ -7164,7 +7208,7 @@ return { ok: true, value: el.value };
         }
       } catch (_ve) {
         // Verification emit is non-fatal
-
+        console.warn('[Sentinel] Post-action verification failed:', getErrorMessage(_ve));
       }
       // (3.16.0) Finalize the dispatch activity item with the outcome.
       try {
@@ -7340,7 +7384,7 @@ return { ok: true, value: el.value };
       consecutiveFailures++;
       // Don't kill the loop on tab-closed errors — try to recover instead
       if (getErrorMessage(err).includes('was closed')) {
-
+        console.warn('[Sentinel] Tab was closed, attempting recovery...');
         // Try to find another tab or the same tab re-created
         try {
           const allTabs = await new Promise(resolve => {
@@ -7382,7 +7426,7 @@ return { ok: true, value: el.value };
   let agentReport = null;
   // (3.50.1) Force-capture reportData if somehow null at this point.
   if (!reportData && finished) {
-
+    console.warn('[Sentinel/report] reportData was NULL — force-capturing');
     reportData = {
       goal: _lastGoal || '',
       history: history.slice(),
@@ -7424,7 +7468,7 @@ return { ok: true, value: el.value };
       // LLM succeeded — overwrite fallback with the polished version
       // (3.50.4) Defensive: if generateReport returns malformed data, fall back
       if (typeof agentReport !== 'object' || !agentReport || typeof agentReport.fullReport !== 'string') {
-
+        console.warn('[Sentinel/report] generateReport returned malformed data, using fallback');
         agentReport = _fbReport;
       } else {
         agentReport._isFallback = false;
@@ -7436,14 +7480,14 @@ return { ok: true, value: el.value };
       agentReport = _fbReport;
     }
   } else {
-
+    console.warn('[Sentinel/report] No reportData — skipping report');
     sendReportUpdate('error', null, 'Agent finished without collecting execution data');
   }
 
   // NOW safe to release keepalive — report is already generated
   try { stopSwKeepalive(_loopKaName); } catch (e) { console.error('[Sentinel] SW keepalive stop failed:', getErrorMessage(e)); }
   try { await chrome.storage.session.remove(['agentRunning', 'agentGoal', 'agentStartTime']); } catch(e) {
-
+    console.warn('[Sentinel] Failed to clear agent state from session storage:', getErrorMessage(e));
     // Try to force-clear individual keys
     try { await chrome.storage.session.remove(['agentRunning']); } catch (_clearErr) { console.warn('[Sentinel] Failed to clear agentRunning:', getErrorMessage(_clearErr)); }
     try { await chrome.storage.session.remove(['agentGoal']); } catch (_clearErr) { console.warn('[Sentinel] Failed to clear agentGoal:', getErrorMessage(_clearErr)); }
@@ -7454,7 +7498,7 @@ return { ok: true, value: el.value };
     try {
       await chrome.storage.local.set({ agent_history: [], agent_memory: {} });
     } catch (e) {
-
+      console.warn('[Sentinel] post-loop history/memory clear failed:', getErrorMessage(e));
     }
   }
 
@@ -7470,12 +7514,14 @@ return { ok: true, value: el.value };
     try { await _scopeSidePanelToPrimary(); } catch (e) { console.warn('[Sentinel] Side panel re-scope failed:', getErrorMessage(e)); } } catch (e) { console.error('[Sentinel] Error in agent-engine.js:', getErrorMessage(e)); }
 
   agentRunning = false;
-
+  console.log(`[Sentinel] Agent completed. Total API calls: ${apiCallCount}`);
+  
   // Phase 5: v8.0/v9.0 Advanced Intelligence - Final analytics
   try {
     // Stop profiling and generate summary
     const profilingSummary = RuntimeProfiler.stop();
-
+    console.log('[Sentinel Phase 5] Profiling stopped:', profilingSummary);
+    
     // Run predictive analysis on this run
     const predictiveData = {
       goal: _lastGoal,
@@ -7487,6 +7533,7 @@ return { ok: true, value: el.value };
       stagnation: _pageStagnation
     };
     const predictiveInsights = PredictiveEngine.analyze(predictiveData);
+    console.log('[Sentinel Phase 5] Predictive analysis complete:', predictiveInsights);
 
     // Generate mutation proposals for optimization
     if ((predictiveInsights.riskAssessment?.score || 0) > 50) {
@@ -7502,7 +7549,7 @@ return { ok: true, value: el.value };
       };
       const mutations = RuntimeProfiler.proposeMutations(currentState);
       mutationProposals = mutations.proposals || [];
-
+      console.log('[Sentinel Phase 5] Mutation proposals generated:', mutationProposals.length);
     }
     
     // Store Phase 5 results in audit log
@@ -7512,7 +7559,7 @@ return { ok: true, value: el.value };
     }); // SO-90: schema-correct audit entry (was 3-arg, wrote hollow record)
     
   } catch (e) {
-
+    console.warn('[Sentinel Phase 5] Advanced analytics failed:', getErrorMessage(e));
   }
   
   // v10.0: Run novelty detection on completed actions
@@ -7525,9 +7572,9 @@ return { ok: true, value: el.value };
     const runId = runLogId || 'current';
     const noveltyResults = await analyzeForNovelty(runId, noveltyData);
     await storeNoveltyResult(runId, noveltyData, noveltyResults);
-
+    console.log('[Sentinel] Novelty detection complete:', noveltyResults.isNovel ? 'novel' : 'familiar');
   } catch (e) {
-
+    console.warn('[Sentinel] Novelty detection failed:', getErrorMessage(e));
   }
   // v10.0: Generate knowledge synthesis from this run
   try {
@@ -7539,9 +7586,9 @@ return { ok: true, value: el.value };
       contradictionStats: await getContradictionStatistics(),
       noveltyStats: await getNoveltyStatistics(runLogId || 'current')
     });
-
+    console.log('[Sentinel] Knowledge synthesis generated:', synthesis.summary);
   } catch (e) {
-
+    console.warn('[Sentinel] Knowledge synthesis failed:', getErrorMessage(e));
   }
   // v10.0: Generate compliance report
   try {
@@ -7569,15 +7616,15 @@ return { ok: true, value: el.value };
       type: 'compliance_report',
       outcome: 'V10.0 compliance report appended'
     }); // SO-90: schema-correct audit entry (was 3-arg, wrote hollow record)
-
+    console.log('[Sentinel] Compliance report generated and added to audit log');
   } catch (e) {
-
+    console.warn('[Sentinel] Compliance report generation failed:', getErrorMessage(e));
   }
   // v10.0: Persist knowledge graph to storage
   try {
     await persistKnowledgeGraph();
   } catch (e) {
-
+    console.warn('[Sentinel] Failed to persist knowledge graph:', getErrorMessage(e));
   }
   // (3.12.0) Tally client-knowledge entries used and bump the client's runCount.
   // Quiet, non-fatal — never let knowledge bookkeeping break the run finish path.

@@ -54,9 +54,9 @@ export async function initBridge(options = {}) {
 
   if (_serverAvailable) {
     _startPolling();
-
+    console.log('[UAP Bridge] Connected to', _serverUrl);
   } else {
-
+    console.log('[UAP Bridge] Server not available at', _serverUrl, '— will retry on next broadcast');
   }
 }
 
@@ -217,7 +217,7 @@ async function _pollTasks() {
         try {
           await _onGoalCallback(task.goal, task.context);
         } catch (e) {
-
+          console.warn('[UAP Bridge] Goal callback error:', e);
         }
       }
     }

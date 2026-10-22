@@ -35,7 +35,7 @@ async function ensureAuthToken() {
   return new Promise((resolve) => {
     chrome.storage.local.get(['ws_bridge_token'], (result) => {
       if (chrome.runtime.lastError) {
-
+        console.warn('[WS-BRIDGE] Failed to read auth token:', getErrorMessage(chrome.runtime.lastError));
         const token = generateToken();
         authToken = token;
         resolve(token);
@@ -48,10 +48,10 @@ async function ensureAuthToken() {
         const token = generateToken();
         chrome.storage.local.set({ ws_bridge_token: token }, () => {
           if (chrome.runtime.lastError) {
-
+            console.warn('[WS-BRIDGE] Failed to persist auth token:', getErrorMessage(chrome.runtime.lastError));
           }
           authToken = token;
-
+          console.log('[WS-BRIDGE] Generated new bridge auth token');
           resolve(authToken);
         });
       }
@@ -63,13 +63,13 @@ async function ensureAuthToken() {
 
 export async function startBridge() {
   if (!enabled) return;
-
+  console.log('[WS-BRIDGE] Starting WebSocket bridge client...');
   await ensureAuthToken();
   connect();
 }
 
 export function stopBridge() {
-
+  console.log('[WS-BRIDGE] Stopping...');
   enabled = false;
   authenticated = false;
   if (ws) {
@@ -89,14 +89,14 @@ function connect() {
   try {
     ws = new WebSocket(BRIDGE_URL);
   } catch (e) {
-
+    console.warn('[WS-BRIDGE] Failed to create WebSocket:', getErrorMessage(e));
     isConnecting = false;
     scheduleReconnect();
     return;
   }
 
   ws.onopen = () => {
-
+    console.log('[WS-BRIDGE] Connected to bridge server');
     isConnecting = false;
     reconnectDelay = RECONNECT_BASE_MS;
     authenticated = false;
@@ -116,12 +116,12 @@ function connect() {
   ws.onmessage = async (event) => {
     try {
       if (typeof event.data === 'string' && event.data.length > MAX_MESSAGE_SIZE) {
-
+        console.warn('[WS-BRIDGE] Oversized message dropped');
         return;
       }
       const message = JSON.parse(event.data);
       if (!validateMessage(message)) {
-
+        console.warn('[WS-BRIDGE] Invalid message structure dropped');
         return;
       }
       await handleMessage(message);
@@ -131,7 +131,7 @@ function connect() {
   };
 
   ws.onclose = () => {
-
+    console.log('[WS-BRIDGE] Disconnected');
     isConnecting = false;
     authenticated = false;
     if (heartbeatTimer) {
@@ -143,7 +143,7 @@ function connect() {
   };
 
   ws.onerror = () => {
-
+    console.warn('[WS-BRIDGE] Connection error');
   };
 }
 
@@ -157,7 +157,7 @@ function scheduleReconnect() {
   if (!enabled) return;
   const jitter = Math.random() * 0.3 * reconnectDelay;
   const delay = reconnectDelay + jitter;
-
+  console.log(`[WS-BRIDGE] Reconnecting in ${(delay / 1000).toFixed(1)}s...`);
   setTimeout(() => {
     if (enabled) connect();
   }, delay);
@@ -170,22 +170,25 @@ async function handleMessage(message) {
   const msgType = message.type;
   const requestId = message.request_id;
 
+  console.log(`[WS-BRIDGE] Received: ${msgType}${requestId ? ` (req: ${requestId})` : ''}`);
+
   switch (msgType) {
     case 'auth':
       if (message.success) {
         authenticated = true;
-
+        console.log('[WS-BRIDGE] Authenticated successfully');
         sendStatus();
       } else {
         console.error('[WS-BRIDGE] Authentication failed:', message.message);
       }
       break;
 
-    case 'auth_challenge':
+    case 'auth_challenge': {
       challengeNonce = message.nonce;
       const response = await computeChallengeResponse(challengeNonce);
       ws.send(JSON.stringify({ type: 'auth_challenge_response', response }));
       break;
+    }
 
     case 'task':
       if (!authenticated) { sendResponse(requestId, { type: 'error', message: 'Not authenticated' }); return; }
@@ -216,7 +219,7 @@ async function handleMessage(message) {
       break;
 
     default:
-
+      console.warn(`[WS-BRIDGE] Unknown message type: ${msgType}`);
   }
 }
 
@@ -236,6 +239,8 @@ async function handleTask(goal, requestId) {
     sendResponse(requestId, { type: 'error', message: 'No goal provided' });
     return;
   }
+
+  console.log(`[WS-BRIDGE] Starting agent task: ${goal.slice(0, 80)}...`);
 
   try {
     // Import and call the agent engine's startAgent function
@@ -265,6 +270,7 @@ async function handleTask(goal, requestId) {
 }
 
 async function handleQuery(queryText, requestId) {
+  console.log(`[WS-BRIDGE] Query: ${queryText?.slice(0, 80)}...`);
 
   try {
     // Get current page content and answer the query

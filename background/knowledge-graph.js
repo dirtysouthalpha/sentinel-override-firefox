@@ -68,7 +68,7 @@ class KnowledgeGraph {
    */
   addNode(id, data = {}) {
     if (this.nodes.size >= MAX_NODES) {
-
+      console.warn('[Sentinel] Knowledge graph at maximum node capacity');
       return null;
     }
 
@@ -115,12 +115,12 @@ class KnowledgeGraph {
    */
   addEdge(sourceId, targetId, data = {}) {
     if (this.edges.size >= MAX_EDGES) {
-
+      console.warn('[Sentinel] Knowledge graph at maximum edge capacity');
       return null;
     }
 
     if (!this.nodes.has(sourceId) || !this.nodes.has(targetId)) {
-
+      console.warn('[Sentinel] Cannot add edge between non-existent nodes');
       return null;
     }
 

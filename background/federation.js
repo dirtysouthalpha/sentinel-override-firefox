@@ -14,6 +14,7 @@
 
 const uuidv4 = () => crypto.randomUUID();
 import { getErrorMessage } from './error-utils.js';
+import { verifyPayload } from './sig-utils.js';
 
 /**
  * Federation Controller
@@ -29,7 +30,10 @@ class FederationController {
       maxPeers: 50,
       minTrustScore: 70,
       rebalanceInterval: 60000, // 1 minute
-      resultTimeout: 120000 // 2 minutes
+      resultTimeout: 120000, // 2 minutes
+      // v21 security: peers sign their registration payload with HMAC-SHA256
+      // over this shared secret (sig-utils.js). Unset => no peer can register.
+      sharedSecret: ''
     };
     
     this.rebalanceTimer = null;
@@ -44,7 +48,7 @@ class FederationController {
       await this.loadConfig();
       
       if (!this.config.enabled) {
-
+        console.warn('[Federation] Disabled in config');
         return;
       }
 
@@ -54,6 +58,7 @@ class FederationController {
       // Start rebalance loop
       this.startRebalanceLoop();
 
+      console.warn('[Federation] Initialized');
     } catch (error) {
       console.error('[Federation] Init failed:', getErrorMessage(error));
       throw error;
@@ -88,7 +93,7 @@ class FederationController {
       publicKey: 'fed_' + uuidv4(),
       secretKey: 'fed_sec_' + uuidv4()
     };
-
+    console.warn('[Federation] Keypair generated');
   }
 
   /**
@@ -97,8 +102,8 @@ class FederationController {
   async registerPeer(peerInfo) {
     const { peer_id, capabilities, max_concurrent_goals, trust_score_baseline, signature } = peerInfo;
 
-    // Verify signature
-    if (!this.verifySignature(peerInfo, signature)) {
+    // Verify signature (HMAC-SHA256 over the canonical payload)
+    if (!(await this.verifySignature(peerInfo, signature))) {
       throw new Error('Invalid peer signature');
     }
 
@@ -124,6 +129,7 @@ class FederationController {
       status: 'active'
     });
 
+    console.warn('[Federation] Peer registered:', peer_id);
     this.logAudit('peer_registered', { peer_id, capabilities });
 
     return {
@@ -148,7 +154,7 @@ class FederationController {
     }
 
     this.peers.delete(peerId);
-
+    console.warn('[Federation] Peer unregistered:', peerId);
     this.logAudit('peer_unregistered', { peer_id: peerId });
 
     return true;
@@ -267,7 +273,7 @@ class FederationController {
     }
 
     if (capablePeers.length === 0) {
-
+      console.warn('[Federation] No capable peers for sub-goal:', subGoal.id);
       subGoal.status = 'failed';
       subGoal.error = 'No capable peers available';
       return;
@@ -291,6 +297,8 @@ class FederationController {
     if (!job.assignedPeers.includes(selectedPeer.peerId)) {
       job.assignedPeers.push(selectedPeer.peerId);
     }
+
+    console.warn('[Federation] Assigned', subGoal.id, 'to', selectedPeer.peerId);
 
     // Send goal to peer (via UAP server or direct message)
     await this.sendGoalToPeer(selectedPeer.peerId, subGoal);
@@ -326,7 +334,8 @@ class FederationController {
   async sendGoalToPeer(peerId, subGoal) {
     // Implementation depends on transport mechanism
     // Could use WebSocket, HTTP, or chrome.runtime messaging
-
+    console.warn('[Federation] Sending goal to peer:', peerId, subGoal.description);
+    
     // Placeholder - would send actual message via UAP server
     this.logAudit('goal_sent_to_peer', { peer_id: peerId, sub_goal_id: subGoal.id });
   }
@@ -550,15 +559,17 @@ class FederationController {
         jobId: job.id
       });
 
+      console.warn(`[Federation] Updated trust for ${result.peerId}: ${peer.trust.current} (${scoreDelta > 0 ? '+' : ''}${scoreDelta})`);
     }
   }
 
   /**
    * Verify peer signature
    */
-  verifySignature(peerInfo, signature) {
-    // Placeholder - in production, use Ed25519 verification
-    return signature && signature.length > 0;
+  async verifySignature(peerInfo, signature) {
+    if (!peerInfo || !signature) return false;
+    // Fails closed when `config.sharedSecret` is unset or the HMAC mismatches.
+    return verifyPayload(this.config.sharedSecret, peerInfo, signature);
   }
 
   /**
@@ -574,12 +585,13 @@ class FederationController {
    * Rebalance work across peers
    */
   rebalance() {
+    console.warn('[Federation] Rebalancing...');
 
     // Check for stalled peers
     const now = Date.now();
     for (const [peerId, peer] of this.peers.entries()) {
       if (now - peer.load.lastSeen > 300000) { // 5 minutes
-
+        console.warn('[Federation] Peer stalled:', peerId);
         peer.status = 'stalled';
       }
     }
@@ -676,6 +688,7 @@ class FederationController {
     this.peers.clear();
     this.activeJobs.clear();
 
+    console.warn('[Federation] Shut down');
   }
 }
 

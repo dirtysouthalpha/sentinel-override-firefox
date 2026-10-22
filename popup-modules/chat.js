@@ -98,6 +98,7 @@ let _voiceListeningTabId = null; // Track which tab we're listening to
 let _voiceMessageListener = null;
 let _voiceClickHandler = null;
 
+
 // ========== Tenant Chip (3.7.0) ==========
 // eslint-disable-next-line no-unused-vars
 function renderTenantChip(tenant, expected) {
@@ -305,7 +306,7 @@ function updateActiveTabAction(payload) {
     try {
       chrome.tabs.get(tabId, (info) => {
         if (typeof chrome.runtime.lastError === 'object' && chrome.runtime.lastError !== null) {
-
+          console.warn('[Sentinel/chat] chrome.tabs.get failed:', getErrorMessage(chrome.runtime.lastError));
           return;
         }
         if (info && typeof info.windowId === 'number') {
@@ -361,6 +362,7 @@ function ensureMiniShotPanel() {
   __miniShotPanelEl = wrap;
   return wrap;
 }
+
 
 function hideMiniShot() {
   if (__miniShotPanelEl) __miniShotPanelEl.style.display = 'none';
@@ -583,6 +585,7 @@ const INPUT_TEXTAREA_RE = /^(INPUT|TEXTAREA)$/;
 const CSV_QUOTE_RE = /[",\n\r]/;
 const SOURCE_TAG_RE = /\[src:([a-z0-9_-]+)\]|\[unverified\]/gi;
 const COST_EXTRACTION_RE = /\$[\d.]+/;
+
 
 function showApprovalCard(payload) {
   if (!approvalCardContainer) return;
@@ -860,7 +863,7 @@ function _renderMessageBubble(textStr, role) {
       addCodeCopyButtons(msg);
     } catch (err) {
       msg.textContent = textStr;
-
+      console.warn('Markdown parse failed, showing raw text:', err);
     }
   }
 
@@ -914,7 +917,7 @@ function loadChatHistory() {
       // Repair corrupted history (dedup + cap)
       let history = _dedupHistory(result.chat_history);
       if (history.length > CHAT_HISTORY_MAX) {
-
+        console.warn(`[Sentinel/chat] chat_history had ${history.length} entries, trimming to ${CHAT_HISTORY_MAX}`);
         history = history.slice(-CHAT_HISTORY_MAX);
       }
       // Persist the cleaned-up version if it changed
@@ -1044,7 +1047,7 @@ function addMessage(text, role = 'assistant') {
       addCodeCopyButtons(msg);
     } catch (err) {
       msg.textContent = textStr;
-
+      console.warn('Markdown parse failed, showing raw text:', err);
     }
   }
 
@@ -1209,12 +1212,12 @@ if (typeof document !== 'undefined' && document.addEventListener && !window.__se
         const _pong = resp && (resp.pong || (resp.data && resp.data.pong));
         const _isRunning = resp && (resp.agentRunning === true || (resp.data && resp.data.agentRunning === true));
         if (_pong && !_isRunning) {
-
+          console.warn('[Sentinel] Safety reset: UI was stuck disabled but no agent running');
           resetUI();
         }
         // If SW is unreachable, also reset — no agent could be running
         if (!resp) {
-
+          console.warn('[Sentinel] Safety reset: SW unreachable, clearing stuck UI');
           resetUI();
         }
       });
@@ -1320,7 +1323,7 @@ function sendMessage() {
       tabId: _correctionTabId
     }, (resp) => {
       if (typeof chrome.runtime.lastError === 'object' && chrome.runtime.lastError !== null) {
-
+        console.warn('[Sentinel] Correction send failed:', getErrorMessage(chrome.runtime.lastError));
         if (typeof showToast === 'function') showToast('Correction failed to send', 'error');
         return;
       }
@@ -1382,7 +1385,7 @@ function sendMessage() {
     // Block only a real, non-loopback endpoint that has no key.
     const _provObj = (_activeId && _providers) ? _providers[_activeId] : null;
     const _activeEndpoint = (_provObj && _provObj.endpoint) || stored.api_endpoint || (_provObj && _provObj.defaultEndpoint) || '';
-    const _isKeylessLocal = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])([:\/]|$)/i.test(_activeEndpoint);
+    const _isKeylessLocal = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])([:/]|$)/i.test(_activeEndpoint);
     const _engineDefaultsLocal = !_activeEndpoint; // nothing real set -> engine uses keyless B60 default
     if (!_hasProviderKey && !_hasLegacyKey && !_isKeylessLocal && !_engineDefaultsLocal) {
       removeTypingIndicator();
@@ -1644,6 +1647,7 @@ function clearSearchHighlights() {
 
 // ========== Markdown Preview ==========
 previewBtn && previewBtn.addEventListener('click', () => {
+  if (!markdownPreview) return;
   markdownPreview.classList.toggle('show');
   previewBtn.classList.toggle('active');
 });
@@ -1718,7 +1722,7 @@ document.addEventListener('mousedown', (e) => {
 
 function _updateMarkdownPreview() {
   const _goalInput = document.getElementById('goalInput');
-  if (!_goalInput) return;
+  if (!_goalInput || !previewContent) return;
   const text = _goalInput.value;
   if (text) {
     previewContent.innerHTML = sanitizeHtml(marked.parse(text));
@@ -1741,6 +1745,7 @@ fileInput && fileInput.addEventListener('change', (e) => {
 });
 
 function updateAttachmentPreview() {
+  if (!attachmentPreview) return;
   const state = getState();
   if (!state.selectedAttachments || !Array.isArray(state.selectedAttachments) || state.selectedAttachments.length === 0) {
     attachmentPreview.style.display = 'none';
@@ -1777,7 +1782,7 @@ function setupVoiceInput() {
   // #voiceBtn this would otherwise throw uncaught inside DOMContentLoaded and
   // abort the rest of popup init. Fail loud-but-safe instead.
   if (!voiceBtn) {
-
+    console.warn('[Sentinel/chat] setupVoiceInput: #voiceBtn not found — voice input disabled');
     return;
   }
 
@@ -1841,7 +1846,7 @@ function setupVoiceInput() {
           }
           const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
           if (!SpeechRecognition) {
-            chrome.runtime.sendMessage({ action: 'voice_error', error: 'Speech recognition not supported in this tab', tabId: capturedTabId });
+            chrome.runtime.sendMessage({ action: 'voice_error', error: 'Speech recognition not supported in this tab', tabId: capturedTabId }).catch(() => {});
             return;
           }
           const recognition = new SpeechRecognition();
@@ -2055,6 +2060,7 @@ commandPaletteBtn && commandPaletteBtn.addEventListener('click', openCommandPale
 commandPaletteBackdrop && commandPaletteBackdrop.addEventListener('click', closeCommandPalette);
 
 function openCommandPalette() {
+  if (!commandPalette || !commandPaletteBackdrop || !commandInput) return;
   commandPalette.classList.add('show');
   commandPaletteBackdrop.classList.add('show');
   commandInput.focus();
@@ -2062,6 +2068,7 @@ function openCommandPalette() {
 }
 
 function closeCommandPalette() {
+  if (!commandPalette || !commandPaletteBackdrop || !commandInput) return;
   commandPalette.classList.remove('show');
   commandPaletteBackdrop.classList.remove('show');
   commandInput.value = '';
@@ -2138,6 +2145,7 @@ function renderCommandList(commands) {
 }
 
 function moveCommandSelection(direction) {
+  if (!commandList) return;
   const items = commandList.querySelectorAll('.command-item');
   const selected = commandList.querySelector('.command-item.selected');
 
@@ -2153,6 +2161,7 @@ function moveCommandSelection(direction) {
 }
 
 function executeSelectedCommand() {
+  if (!commandList) return;
   const selected = commandList.querySelector('.command-item.selected');
   if (selected) {
     const action = selected.dataset.action || 'about';
@@ -2256,6 +2265,7 @@ function renderTabBar(tabs) {
 
 // ========== Report Card & Modal ==========
 
+
 /**
  * Adds an inline report card to the chat feed with summary preview
  * and a "View Full Report" button.
@@ -2271,6 +2281,7 @@ function addReportCard(report) {
     console.warn('[Sentinel] addReportCard called without a report object; ignoring.');
     return;
   }
+  if (!chatContainer) return;
   const state = getState();
   state.currentReport = report;
 
@@ -2353,24 +2364,24 @@ function openReportModal(markdown) {
   try {
     chrome.storage.local.set({ _pendingViewReport: payload }, () => {
       if (typeof chrome.runtime.lastError === 'object' && chrome.runtime.lastError !== null) {
-
+        console.warn('[Sentinel] storage.set for _pendingViewReport failed:', getErrorMessage(chrome.runtime.lastError));
         openReportModalInline(markdown);
         return;
       }
       try {
         const url = chrome.runtime.getURL('report-view.html');
         chrome.tabs.create({ url }).catch(() => {
-
+          console.warn('[Sentinel] report-view tab creation failed');
           openReportModalInline(markdown);
         });
       } catch (e) {
         // Tab creation failed — fall back to the in-panel modal.
-
+        console.warn('[Sentinel] report-view tab failed, falling back to modal:', getErrorMessage(e));
         openReportModalInline(markdown);
       }
     });
   } catch (e) {
-
+    console.warn('[Sentinel] storage.set for _pendingViewReport failed, using modal fallback:', getErrorMessage(e));
     openReportModalInline(markdown);
   }
 }
@@ -2379,6 +2390,7 @@ function openReportModal(markdown) {
 // can't open (e.g., chrome.tabs unavailable, popup contexts). Not wired by
 // default; openReportModal above handles routing.
 function openReportModalInline(markdown) {
+  if (!reportContent || !reportModal) return;
   const state = getState();
   state.currentReportMarkdown = markdown;
 
@@ -2402,6 +2414,7 @@ function openReportModalInline(markdown) {
  * Closes the report modal.
  */
 function closeReportModal() {
+  if (!reportModal) return;
   reportModal.classList.remove('show');
 }
 
@@ -2538,6 +2551,7 @@ copyReportTextBtn && copyReportTextBtn.addEventListener('click', () => {
 // ========== MFA Pause Banner (3.7.0) ==========
  
 function showMfaBanner(url, hint, _stepNumber) {
+  if (!chatContainer) return;
   // Remove any existing MFA banner first so we don't stack them.
   const existing = document.getElementById('mfa-banner');
   if (existing) existing.remove();
@@ -2596,6 +2610,7 @@ function showMfaBanner(url, hint, _stepNumber) {
 // clicks Resume. Re-uses the existing pause/resume_agent_loop infra.
  
 function showSignInWallBanner(url, host, evidence, _stepNumber) {
+  if (!chatContainer) return;
   const existing = document.getElementById('sign-in-wall-banner');
   if (existing) existing.remove();
 
@@ -2694,6 +2709,7 @@ function _formatDuration(ms) {
 
 /** Ensure a step card exists for this stepNumber and return its activity stream container. */
 function _ensureActivityStream(stepNumber) {
+  if (!chatContainer) return null;
   if (__activityState.has(stepNumber)) {
     return __activityState.get(stepNumber).stream;
   }
@@ -2811,7 +2827,7 @@ function showAgentActivity(stepNumber, key, label, status, detail) {
 function updateStepCardAction(stepNumber, actionDescription) {
   if (!stepNumber || stepNumber < 1) return;
   const state = __activityState.get(stepNumber);
-  const card = state ? state.card : chatContainer.querySelector(`.agent-action-group[data-step="${stepNumber}"]`);
+  const card = state ? state.card : (chatContainer ? chatContainer.querySelector(`.agent-action-group[data-step="${stepNumber}"]`) : null);
   if (!card) return;
   const actionEl = card.querySelector('.activity-step-action');
   if (actionEl) actionEl.textContent = actionDescription || '';
@@ -2829,6 +2845,7 @@ function clearActivityState() {
  
 function showModeMismatchCard(payload) {
   if (!payload) return;
+  if (!chatContainer) return;
   const existing = document.getElementById('mode-mismatch-card');
   if (existing) existing.remove();
 
@@ -2928,6 +2945,7 @@ function showModeMismatchCard(payload) {
  
 function showAdaptedGoalCard(payload) {
   if (!payload) return;
+  if (!chatContainer) return;
   // Remove any prior card so we don't stack on repeated agent starts
   const existing = document.getElementById('adapted-goal-card');
   if (existing) existing.remove();
@@ -3074,6 +3092,7 @@ function showAdaptedGoalCard(payload) {
  
 function showDownloadCaptured(dl) {
   if (!dl) return;
+  if (!chatContainer) return;
   const filename = (dl.filename || '').split(/[\\/]/).pop() || 'file';
   const wrapper = document.createElement('div');
   wrapper.className = 'message-group';
@@ -3099,6 +3118,7 @@ function showDownloadCaptured(dl) {
 let __lastRunLogId = null;
  
 function showRunLogExportButton(runLogId, entryCount) {
+  if (!chatContainer) return;
   __lastRunLogId = runLogId;
   // Remove any prior export banner
   const existing = document.getElementById('run-log-banner');
@@ -3179,7 +3199,7 @@ async function renderRunLogHistoryList() {
     };
     const rowsHtml = list.map((entry) => {
       const id = escapeHtml(entry.runLogId || '');
-      const goalShort = (entry.goal || '(no goal)').replace(/</g, '&lt;').slice(0, 140);
+      const goalShort = escapeHtml((entry.goal || '(no goal)').slice(0, 140));
       const statusChip = entry.completed
         ? '<span style="display:inline-block; padding:2px 6px; font-size:10px; border-radius:8px; background:rgba(0,255,100,0.12); color:#33cc66; border:1px solid #2a9d4a;">COMPLETE</span>'
         : '<span style="display:inline-block; padding:2px 6px; font-size:10px; border-radius:8px; background:rgba(255,180,0,0.12); color:#cc8800; border:1px solid #aa7700;">INCOMPLETE</span>';
@@ -3337,11 +3357,16 @@ async function checkResumeOnLoad() {
     const resp = await chrome.runtime.sendMessage({ action: 'check_resume_available' });
     const data = (resp && resp.data) ? resp.data : resp;
     if (!data || !data.available) return;
+    // Don't show resume banner if the user has already started interacting
+    // (e.g., typed in the input or started a new chat)
+    const state = getState();
+    if (state.conversationHistory && state.conversationHistory.length > 0) return;
     showResumeBanner(data.goal, data.stepCount, data.ageSeconds);
   } catch { /* non-fatal */ }
 }
 
 function showResumeBanner(goal, stepCount, ageSeconds) {
+  if (!chatContainer) return;
   const banner = document.createElement('div');
   banner.id = 'resume-banner';
   banner.className = 'safety-banner';
@@ -3415,7 +3440,7 @@ async function _tryShowReport() {
       if (card) card.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }, 100);
   } catch (e) {
-
+    console.warn('[Sentinel/report] _tryShowReport failed:', getErrorMessage(e));
   }
 }
 
@@ -3427,10 +3452,21 @@ chrome.storage.onChanged.addListener((changes, area) => {
 });
 
 // Polling fallback — try 3 times at 500ms, 1500ms, 3000ms
+// Track timer IDs so we can cancel them if the popup closes
+let _reportPollTimers = [];
 function _scheduleReportPoll() {
-  setTimeout(_tryShowReport, 500);
-  setTimeout(_tryShowReport, 1500);
-  setTimeout(_tryShowReport, 3000);
+  _reportPollTimers.push(setTimeout(_tryShowReport, 500));
+  _reportPollTimers.push(setTimeout(_tryShowReport, 1500));
+  _reportPollTimers.push(setTimeout(_tryShowReport, 3000));
+}
+
+// Cancel report polling if the popup closes
+// Guard: window.addEventListener may not exist in test environments
+if (typeof window !== 'undefined' && window.addEventListener) {
+  window.addEventListener('unload', () => {
+    _reportPollTimers.forEach(t => clearTimeout(t));
+    _reportPollTimers = [];
+  }, { once: true });
 }
 
 if (document.readyState === 'loading') {
@@ -3438,6 +3474,7 @@ if (document.readyState === 'loading') {
 } else {
   _scheduleReportPoll();
 }
+
 
 // ========== Source Tag Chips (3.10.0) ==========
 // Convert inline [src:memory_key] markers in agent finish summaries into
@@ -3523,6 +3560,8 @@ async function toggleSourceChipExpansion(chip) {
 // a Microsoft admin URL whose tenant doesn't match the user's expectedTenant.
 // Career-risk gate: forces an explicit "yes, intentional cross-tenant work"
 // click before dispatching. Forensic log captures the timestamped decision.
+
+
 
 // ========== Paste Ticket Modal ==========
 if (pasteTicketBtn && pasteTicketModal) {
@@ -4023,8 +4062,10 @@ chrome.runtime.onMessage.addListener((message) => {
       const prefix = summary.length > 100 ? '' : '✅ Task completed\n\n';
       addMessage(prefix + summary, 'assistant');
       try {
-        const lastMsg = chatContainer.querySelector('.message-group:last-child .message.assistant-msg, .message-group:last-child .assistant-wrapper');
-        if (lastMsg) renderSourceChipsIn(lastMsg);
+        if (chatContainer) {
+          const lastMsg = chatContainer.querySelector('.message-group:last-child .message.assistant-msg, .message-group:last-child .assistant-wrapper');
+          if (lastMsg) renderSourceChipsIn(lastMsg);
+        }
       } catch { /* non-fatal */ }
       // Inline replay export shortcut (9.3)
       try {

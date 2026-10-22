@@ -1,5 +1,5 @@
 // Sentinel Override v3 -- Template Manager
-
+// Template CRUD, parameter extraction, goal resolution, usage tracking.
 // Layer 2 module -- imports from error-utils.js only.
 // Storage: chrome.storage.local key 'sentinel_templates'
 

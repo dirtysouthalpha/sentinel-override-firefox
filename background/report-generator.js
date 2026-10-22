@@ -323,7 +323,7 @@ async function generateReportViaLLM(prompt, CONFIG, systemPrompt) {
       const providerConfig = await getActiveProvider();
       if (!providerConfig) throw new Error('No active provider configured');
       const { endpoint, apiKey, model } = providerConfig;
-      const _isLocalEndpoint = /^(https?:)?\/\/(127\.0\.0\.1|localhost|\[::1\])([:\/]|$)/i.test(endpoint || '');
+      const _isLocalEndpoint = /^(https?:)?\/\/(127\.0\.0\.1|localhost|\[::1\])([:/]|$)/i.test(endpoint || '');
       if (!apiKey && !_isLocalEndpoint) throw new Error('API key not configured');
 
       const provider = resolveProvider(endpoint);
@@ -356,7 +356,7 @@ async function generateReportViaLLM(prompt, CONFIG, systemPrompt) {
         if (err.name === 'AbortError') {
           lastError = new Error(`Report LLM timed out after ${REPORT_TIMEOUT / ONE_SECOND_MS}s (attempt ${attempt}/${MAX_ATTEMPTS})`);
           if (attempt < MAX_ATTEMPTS) {
-
+            console.warn('[Sentinel/report] Attempt', attempt, 'timed out, retrying with shorter output...');
             continue;
           }
           throw lastError;
@@ -370,7 +370,7 @@ async function generateReportViaLLM(prompt, CONFIG, systemPrompt) {
         try { errorData = await response.text(); } catch (_) { errorData = 'unknown error'; }
         lastError = new Error(`Report LLM call failed: ${response.status} - ${errorData}`);
         if (attempt < MAX_ATTEMPTS) {
-
+          console.warn('[Sentinel/report] Attempt', attempt, 'failed:', response.status, 'retrying...');
           continue;
         }
         throw lastError;
@@ -401,7 +401,7 @@ async function generateReportViaLLM(prompt, CONFIG, systemPrompt) {
         || errMsg.startsWith('Report LLM returned invalid JSON');
       if (isNonRetryable) break;
       if (attempt < MAX_ATTEMPTS) {
-
+        console.warn('[Sentinel/report] Attempt', attempt, 'failed:', errMsg, 'retrying...');
         await new Promise(r => setTimeout(r, ONE_SECOND_MS));
       }
     }

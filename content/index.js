@@ -114,7 +114,7 @@ var ctel = window.__sentinelContentTel;
 // when content/index.js is injected multiple times (e.g., on page navigation).
 if (window.__sentinelInitialized) {
   try { chrome.runtime.sendMessage({ action: 'content_script_ready' }).catch((e) => {
-
+    console.warn('[Sentinel] re-inject ready send failed:', getErrorMessage(e));
   }); } catch (e) { console.warn('[Sentinel] re-inject ready signal:', getErrorMessage(e)); }
 } else {
   window.__sentinelInitialized = true;
@@ -143,7 +143,9 @@ if (window.__sentinelInitialized) {
 
   // Shorthand references to utility modules
   const dom = (window.__sentinelUtils && window.__sentinelUtils.dom) || null;
-  const hl = (window.__sentinelUtils && window.__sentinelUtils.highlight) || null;
+  // Provide no-op fallbacks for hl so unguarded call sites don't crash if
+  // highlight.js hasn't loaded yet (race condition during re-injection).
+  const hl = (window.__sentinelUtils && window.__sentinelUtils.highlight) || { highlightElement: function() {}, removeHighlight: function() {} };
   const wait = (window.__sentinelUtils && window.__sentinelUtils.wait) || null;
   const dd = (window.__sentinelUtils && window.__sentinelUtils.dropdown) || null;
   const si = (window.__sentinelUtils && window.__sentinelUtils.specialInputs) || null;
@@ -1224,7 +1226,7 @@ if (window.__sentinelInitialized) {
       get(target, prop, _receiver) {
         // Block sensitive document properties (cookie, domain, referrer, location, write, writeln)
         if (EXECUTE_JS_BLOCKED_DOC_PROPS.has(prop)) {
-
+          console.warn(`[Sentinel Sandbox] Blocked access to document.${String(prop)} in execute_js`);
           return undefined;
         }
         // When code asks for document.defaultView, return the sandboxed window proxy
@@ -1240,7 +1242,7 @@ if (window.__sentinelInitialized) {
       },
       set(target, prop, value) {
         if (EXECUTE_JS_BLOCKED_DOC_PROPS.has(prop)) {
-
+          console.warn(`[Sentinel Sandbox] Blocked write to document.${String(prop)} in execute_js`);
           return true; // silently swallow the write
         }
         target[prop] = value;
@@ -1261,7 +1263,7 @@ if (window.__sentinelInitialized) {
       get(target, prop, _receiver) {
         // Block all dangerous window APIs
         if (EXECUTE_JS_BLOCKED_APIS.has(prop)) {
-
+          console.warn(`[Sentinel Sandbox] Blocked access to window.${String(prop)} in execute_js`);
           return undefined;
         }
         // Pass through safe properties, binding methods to the real window
@@ -1273,7 +1275,7 @@ if (window.__sentinelInitialized) {
       },
       set(target, prop, value) {
         if (EXECUTE_JS_BLOCKED_APIS.has(prop)) {
-
+          console.warn(`[Sentinel Sandbox] Blocked write to window.${String(prop)} in execute_js`);
           return true; // silently swallow the write
         }
         target[prop] = value;
@@ -1292,6 +1294,16 @@ if (window.__sentinelInitialized) {
   // when the ref is stale (element removed from DOM, or scan rotated).
   // Returns { el, viaRef, staleRef } so callers can log appropriately.
   function resolveCommandTarget(cmd, targetDoc) {
+    // Guard against null dom (dom-utils.js not yet loaded during re-injection).
+    if (!dom) {
+      if (cmd && cmd.selector) {
+        try {
+          const el = targetDoc.querySelector(cmd.selector);
+          return { el, viaRef: false, staleRef: false };
+        } catch (e) { /* invalid selector */ }
+      }
+      return { el: null, viaRef: false, staleRef: false };
+    }
     // Try ref first when provided
     if (cmd && cmd.ref) {
       const el = dom.findElementByRef && dom.findElementByRef(cmd.ref);
@@ -1301,12 +1313,14 @@ if (window.__sentinelInitialized) {
       // Ref stale — try semantic identity matches before falling back to the
       // brittle nth-of-type selector chain, which breaks on SPA re-renders.
       try {
-
+        console.warn(`[Sentinel Override] ${cmd.ref} stale, attempting semantic fallback`);
       } catch (e) { console.warn('[Sentinel] stale ref log:', getErrorMessage(e)); }
       // 1. aria-label match (most reliable stable identifier)
       if (cmd.ariaLabel) {
         try {
-          const byAria = targetDoc.querySelector(`[aria-label="${(cmd.ariaLabel || '').replace(/"/g, '\\"')}"]`);
+          // Escape backslashes first, then quotes, to prevent selector injection.
+          const escaped = String(cmd.ariaLabel).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+          const byAria = targetDoc.querySelector(`[aria-label="${escaped}"]`);
           if (byAria) return { el: byAria, viaRef: false, staleRef: true };
         } catch (e) { console.warn('[Sentinel] aria-label fallback:', getErrorMessage(e)); }
       }
@@ -1356,7 +1370,9 @@ if (window.__sentinelInitialized) {
       if (cmd.elementText) {
         try {
           const needle = rawText.substring(0, 30).toLowerCase().replace(/\s+/g, '-');
-          const byTestId = targetDoc.querySelector(`[data-testid*="${needle}" i], [data-id*="${needle}" i]`);
+          // Escape backslashes and quotes to prevent attribute selector injection.
+          const escapedNeedle = needle.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+          const byTestId = targetDoc.querySelector(`[data-testid*="${escapedNeedle}" i], [data-id*="${escapedNeedle}" i]`);
           if (byTestId) return { el: byTestId, viaRef: false, staleRef: true };
         } catch (e) { console.warn('[Sentinel] testid fallback:', getErrorMessage(e)); }
       }
@@ -1669,7 +1685,7 @@ if (window.__sentinelInitialized) {
         try {
           const liveDpr = window.devicePixelRatio || 1;
           if (typeof cmd.dpr === 'number' && !Number.isNaN(cmd.dpr) && Math.abs(cmd.dpr - liveDpr) > 0.01) {
-
+            console.warn(`[sentinel] click_at dpr mismatch: cmd.dpr=${cmd.dpr} live=${liveDpr} (still treating x,y as CSS pixels)`);
           }
         } catch (e) { console.warn('[Sentinel] Non-fatal error:', getErrorMessage(e)); }
 
@@ -1837,10 +1853,10 @@ if (window.__sentinelInitialized) {
         // intermediate mousemove steps for smooth drag appearance
         var steps = 6;
         for (var dragStep = 1; dragStep <= steps; dragStep++) {
-          var mx = Math.round(srcX + (dstX - srcX) * (dragStep / steps));
-          var my = Math.round(srcY + (dstY - srcY) * (dragStep / steps));
-          dragEl.dispatchEvent(mkMouse('mousemove', mx, my));
-          try { dropEl.dispatchEvent(mkDrag('dragover', mx, my)); } catch (_dragOverErr) { /* Non-fatal: dragover failed */ }
+          var dmx = Math.round(srcX + (dstX - srcX) * (dragStep / steps));
+          var dmy = Math.round(srcY + (dstY - srcY) * (dragStep / steps));
+          dragEl.dispatchEvent(mkMouse('mousemove', dmx, dmy));
+          try { dropEl.dispatchEvent(mkDrag('dragover', dmx, dmy)); } catch (_dragOverErr) { /* Non-fatal: dragover failed */ }
           await humanDelay(20, 40);
         }
 
@@ -2410,7 +2426,7 @@ if (window.__sentinelInitialized) {
         }
 
         try {
-
+          console.warn('[Sentinel Override] execute_js running with full page privileges:', code.slice(0, 200));
         } catch (e) { console.warn('[Sentinel] exec_js warn log:', getErrorMessage(e)); }
 
         // (#26) Honor cmd.timeout: default 8000ms, max 30000ms; clamp.
@@ -2568,9 +2584,9 @@ if (window.__sentinelInitialized) {
                     'var __s = typeof __r === "object" && __r !== null' +
                       ' ? JSON.stringify(__r).substring(0, 3000)' +
                       ' : (__r === null || __r === undefined ? "" : String(__r)).substring(0, 3000);' +
-                    'window.postMessage({ __sentinelEventId: ' + __eventIdJson + ', __value: __s }, "*");' +
+                    'window.postMessage({ __sentinelEventId: ' + __eventIdJson + ', __value: __s }, (window.location && window.location.origin) || "*");' +
                   '} catch(e) {' +
-                    'window.postMessage({ __sentinelEventId: ' + __eventIdJson + ', __error: (typeof e === \'object\' && e !== null && typeof e.message === \'string\' ? e.message : String(e)) }, "*");' +
+                    'window.postMessage({ __sentinelEventId: ' + __eventIdJson + ', __error: (typeof e === \'object\' && e !== null && typeof e.message === \'string\' ? e.message : String(e)) }, (window.location && window.location.origin) || "*");' +
                   '}' +
                 '})();';
             } else {
@@ -2583,9 +2599,9 @@ if (window.__sentinelInitialized) {
                     'const __s = typeof __r === "object" && __r !== null' +
                       ' ? JSON.stringify(__r).substring(0, 3000)' +
                       ' : (__r === null || __r === undefined ? "" : String(__r)).substring(0, 3000);' +
-                    'window.postMessage({ __sentinelEventId: ' + __eventIdJson + ', __value: __s }, "*");' +
+                    'window.postMessage({ __sentinelEventId: ' + __eventIdJson + ', __value: __s }, (window.location && window.location.origin) || "*");' +
                   '} catch(e) {' +
-                    'window.postMessage({ __sentinelEventId: ' + __eventIdJson + ', __error: (typeof e === \'object\' && e !== null && typeof e.message === \'string\' ? e.message : String(e)) }, "*");' +
+                    'window.postMessage({ __sentinelEventId: ' + __eventIdJson + ', __error: (typeof e === \'object\' && e !== null && typeof e.message === \'string\' ? e.message : String(e)) }, (window.location && window.location.origin) || "*");' +
                   '}' +
                 '})();';
             }
@@ -2684,7 +2700,7 @@ if (window.__sentinelInitialized) {
             containers = [root];
           } else if (cmd.selector) {
             try {
-
+              console.warn(`[Sentinel Override] ${cmd.ref} stale, falling back to selector`);
             } catch (e) { console.warn('[Sentinel] extract_list stale log:', getErrorMessage(e)); }
             try {
               containers = [...targetDoc.querySelectorAll(cmd.selector)];
@@ -2846,7 +2862,7 @@ if (window.__sentinelInitialized) {
 
   function safeSendMessage(msg) {
     try { chrome.runtime.sendMessage(msg).catch((e) => {
-
+      console.warn('[Sentinel] safe send failed:', getErrorMessage(e));
     }); } catch (e) { console.warn('[Sentinel] safe send msg:', getErrorMessage(e)); }
   }
 
@@ -2891,24 +2907,30 @@ if (window.__sentinelInitialized) {
       }, 300);
     };
 
-    const originalPushState = history.pushState;
-    const originalReplaceState = history.replaceState;
-
-    history.pushState = function(...args) {
-      originalPushState.apply(this, args);
-      if (window.location.href !== lastUrl) {
-        lastUrl = window.location.href;
-        dispatchSPATransition(lastUrl);
-      }
-    };
-
-    history.replaceState = function(...args) {
-      originalReplaceState.apply(this, args);
-      if (window.location.href !== lastUrl) {
-        lastUrl = window.location.href;
-        dispatchSPATransition(lastUrl);
-      }
-    };
+    // Guard against double-wrapping on re-injection: if pushState/replaceState
+    // are already wrapped (flag set), skip to avoid stacking multiple handlers.
+    if (!history.pushState.__sentinelWrapped) {
+      const originalPushState = history.pushState;
+      history.pushState = function(...args) {
+        originalPushState.apply(this, args);
+        if (window.location.href !== lastUrl) {
+          lastUrl = window.location.href;
+          dispatchSPATransition(lastUrl);
+        }
+      };
+      history.pushState.__sentinelWrapped = true;
+    }
+    if (!history.replaceState.__sentinelWrapped) {
+      const originalReplaceState = history.replaceState;
+      history.replaceState = function(...args) {
+        originalReplaceState.apply(this, args);
+        if (window.location.href !== lastUrl) {
+          lastUrl = window.location.href;
+          dispatchSPATransition(lastUrl);
+        }
+      };
+      history.replaceState.__sentinelWrapped = true;
+    }
 
     const __sentinelPopstateHandler = () => {
       if (window.location.href !== lastUrl) {
@@ -2919,7 +2941,7 @@ if (window.__sentinelInitialized) {
     window.addEventListener('popstate', __sentinelPopstateHandler);
 
     // Cleanup on page unload to prevent memory leaks
-    const cleanupObservers = () => {
+    window.addEventListener('beforeunload', () => {
       window.removeEventListener('popstate', __sentinelPopstateHandler);
       if (domObserver) {
         domObserver.disconnect();
@@ -2933,18 +2955,14 @@ if (window.__sentinelInitialized) {
         clearTimeout(spaDebounce);
         spaDebounce = null;
       }
-    };
-    window.addEventListener('beforeunload', cleanupObservers);
-    // pagehide is more reliable than beforeunload in extension contexts
-    window.addEventListener('pagehide', cleanupObservers);
+    });
   }
 
   setupSPAObservers();
 
   try { chrome.runtime.sendMessage({ action: 'content_script_ready' }).catch((e) => {
-
+    console.warn('[Sentinel] init ready send failed:', getErrorMessage(e));
   }); } catch (e) { console.warn('[Sentinel] init ready signal:', getErrorMessage(e)); }
 }
 // (3.26.0) End-of-file marker — sync flush. (v3.36.3 dedupe applied)
-
 })();

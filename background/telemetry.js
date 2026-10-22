@@ -235,7 +235,7 @@ async function _flushRunBuffer() {
   } catch (e) {
     // Re-enable so the interval timer retries on the next tick
     _pendingPersistFlush = true;
-
+    console.warn('[Sentinel/telemetry] flush error (will retry):', getErrorMessage(e));
   }
 }
 

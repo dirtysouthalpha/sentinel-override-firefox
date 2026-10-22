@@ -12,11 +12,6 @@ import { FIVE_HUNDRED_MS, ONE_MINUTE_MS, FIVE_MINUTES_MS, ONE_HOUR_MS } from './
 import { tel } from './telemetry.js';
 import { getErrorMessage } from './error-utils.js';
 
-// H-5: Mutex to prevent TOCTOU race on agentRunning check.
-// Set to true before checking agentRunning, cleared after startAgent completes.
-// This prevents concurrent scheduled tasks from both passing the check.
-let _agentStartLock = false;
-
 // ========== Storage Constants ==========
 const SCHEDULES_KEY = 'sentinel_schedules';
 const RESULTS_KEY = 'sentinel_schedule_results';
@@ -59,7 +54,7 @@ async function loadSchedules() {
     const result = await chrome.storage.local.get([SCHEDULES_KEY]);
     return result[SCHEDULES_KEY] || {};
   } catch (e) {
-
+    console.warn('[Sentinel/scheduler] loadSchedules failed:', getErrorMessage(e));
     return {};
   }
 }
@@ -72,7 +67,7 @@ async function saveSchedules(schedules) {
   try {
     await chrome.storage.local.set({ [SCHEDULES_KEY]: schedules });
   } catch (e) {
-
+    console.warn('[Sentinel/scheduler] saveSchedules failed:', getErrorMessage(e));
   }
 }
 
@@ -85,7 +80,7 @@ async function loadResults() {
     const result = await chrome.storage.local.get([RESULTS_KEY]);
     return result[RESULTS_KEY] || {};
   } catch (e) {
-
+    console.warn('[Sentinel/scheduler] loadResults failed:', getErrorMessage(e));
     return {};
   }
 }
@@ -98,14 +93,14 @@ async function saveResults(results) {
   try {
     await chrome.storage.local.set({ [RESULTS_KEY]: results });
   } catch (e) {
-
+    console.warn('[Sentinel/scheduler] saveResults failed:', getErrorMessage(e));
   }
 }
 
 // ========== Alarm Management ==========
 
 /**
- * Register a chrome.alarm for the given schedule.
+ * Register a chrome.alarms for the given schedule.
  * For 'once': alarm fires once at schedule.nextRunAt.
  * For 'recurring': alarm fires at nextRunAt and repeats at periodInMinutes.
  * @param {object} schedule
@@ -129,7 +124,7 @@ function registerAlarm(schedule) {
   } else {
     chrome.alarms.create(`schedule-${schedule.id}`, alarmInfo, () => {
       if (chrome.runtime.lastError) {
-
+        console.warn('[Sentinel/scheduler] registerAlarm lastError:', getErrorMessage(chrome.runtime.lastError));
       }
     });
   }
@@ -137,7 +132,7 @@ function registerAlarm(schedule) {
 }
 
 /**
- * Clear the chrome.alarm for a given schedule ID.
+ * Clear the chrome.alarms for a given schedule ID.
  * @param {string} scheduleId
  */
 function clearAlarm(scheduleId) {
@@ -149,7 +144,7 @@ function clearAlarm(scheduleId) {
   } else {
     chrome.alarms.clear(`schedule-${scheduleId}`, () => {
       if (chrome.runtime.lastError) {
-
+        console.warn('[Sentinel/scheduler] clearAlarm lastError:', getErrorMessage(chrome.runtime.lastError));
       }
     });
   }
@@ -501,7 +496,7 @@ export async function executeScheduledTask(alarmName) {
   const schedules = await loadSchedules();
   const schedule = schedules[scheduleId];
   if (!schedule) {
-
+    console.warn(`[Sentinel/scheduler] Schedule ${scheduleId} not found, clearing orphan alarm`);
     clearAlarm(scheduleId);
     return;
   }
@@ -510,9 +505,8 @@ export async function executeScheduledTask(alarmName) {
     return;
   }
 
-  // H-5: Acquire mutex before checking agentRunning to prevent TOCTOU race
-  if (_agentStartLock) {
-    tel.info('scheduler', `Agent start already in progress, skipping schedule ${schedule.name}`);
+  if (AgentEngine.agentRunning) {
+    tel.info('scheduler', `Agent busy, skipping schedule ${schedule.name}`);
     schedule.lastRunStatus = 'skipped';
     schedule.lastRunAt = Date.now();
     if (schedule.type === 'recurring' && schedule.recurrence) {
@@ -525,23 +519,6 @@ export async function executeScheduledTask(alarmName) {
     }
     return;
   }
-  _agentStartLock = true;
-
-  try {
-    if (AgentEngine.agentRunning) {
-      tel.info('scheduler', `Agent busy, skipping schedule ${schedule.name}`);
-      schedule.lastRunStatus = 'skipped';
-      schedule.lastRunAt = Date.now();
-      if (schedule.type === 'recurring' && schedule.recurrence) {
-        schedule.nextRunAt = computeNextRun(schedule.recurrence);
-      }
-      schedules[scheduleId] = schedule;
-      await saveSchedules(schedules);
-      if (schedule.type === 'recurring' && schedule.recurrence) {
-        registerAlarm(schedule);
-      }
-      return;
-    }
 
   const resultId = crypto.randomUUID();
   const startedAt = Date.now();
@@ -586,9 +563,6 @@ export async function executeScheduledTask(alarmName) {
     console.error('Failed to start agent:', getErrorMessage(err));
     await _handleTaskFailure(schedule, scheduleId, schedules, { id: resultId, startedAt, error: `Agent start failed: ${getErrorMessage(err)}` });
     return;
-  } finally {
-    // H-5: Release mutex after startAgent completes (success or failure)
-    _agentStartLock = false;
   }
 
   const completionResult = await completionPromise;
@@ -661,7 +635,7 @@ async function _getOrCreateTab() {
   const tabs = await new Promise(resolve => {
     chrome.tabs.query({ active: true, currentWindow: true }, (t) => {
       if (chrome.runtime.lastError) {
-
+        console.warn('[Sentinel/scheduler] tabs.query lastError:', getErrorMessage(chrome.runtime.lastError));
         resolve([]);
         return;
       }
@@ -850,7 +824,7 @@ export async function initScheduler() {
       const alarm = await new Promise(resolve => {
         chrome.alarms.get(`schedule-${id}`, (a) => {
           if (chrome.runtime.lastError) {
-
+            console.warn('[Sentinel/scheduler] alarms.get lastError:', getErrorMessage(chrome.runtime.lastError));
             resolve(undefined);
             return;
           }

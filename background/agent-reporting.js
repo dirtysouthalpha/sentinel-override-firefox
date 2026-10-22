@@ -16,6 +16,7 @@ const _runRecording = {
   tabId: null
 };
 
+
 // Precompile regex for PII redaction (used by saveLearnedPattern)
 const PII_IP_RE = /\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/g;
 const PII_EMAIL_RE = /[\w.+-]+@[\w.-]+/g;

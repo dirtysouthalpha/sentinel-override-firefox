@@ -1,5 +1,5 @@
 // Sentinel Override v3 -- Collaboration & Export
-
+// Template export/import with safety validation, report markdown export,
 // format versioning for forward compatibility.
 // Layer 2 module -- imports only from template-manager.js.
 

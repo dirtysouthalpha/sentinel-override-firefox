@@ -207,7 +207,7 @@ export async function _generateInitialPlan(goal, workingTabId, runSettings) {
   // Analyze plan for potential bias
   const planBiasAnalysis = analyzeForBias(plan?.join('\n') || '');
   if (planBiasAnalysis.hasBias && shouldTriggerBiasWarning(planBiasAnalysis)) {
-
+    console.warn('[Sentinel] Plan bias detected:', planBiasAnalysis);
     logBiasDetection(planBiasAnalysis, 'plan_generation');
   }
   if (plan) {
@@ -338,7 +338,7 @@ export async function _applyAdaptivePrompts(goal, tabInfo, startTabId, currentRu
     } catch (_e) { /* non-fatal */ }
     return result.adaptedGoal;
   } catch (e) {
-
+    console.warn('[Sentinel] adaptive-prompts pass failed (non-fatal):', getErrorMessage(e));
     return goal;
   }
 }

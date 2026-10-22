@@ -74,7 +74,7 @@ setTimeout(() => {
     }
 
     const activeEndpoint = (activeId && providers && providers[activeId] && providers[activeId].endpoint) || '';
-    const isKeylessLocal = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])([:\/]|$)/i.test(activeEndpoint);
+    const isKeylessLocal = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])([:/]|$)/i.test(activeEndpoint);
     // SO-81: nothing configured at all = the built-in keyless local default
     // (B60 internvl3-8b on 127.0.0.1:8083) is what the agent will actually
     // use. That is READY, not an error. Only a CLOUD provider without a key

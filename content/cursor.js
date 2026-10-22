@@ -337,7 +337,7 @@ window.__sentinelUtils = window.__sentinelUtils || {};
         const _ = c.style;
         return { x: lastX, y: lastY };
       } catch (e) {
-
+        console.warn('[Sentinel] cursor.getPosition error:', getErrorMessage(e));
         return { x: -1, y: -1 };
       }
     }

@@ -1,7 +1,7 @@
 // Sentinel Override v3 — Service Worker Entry Point
 // Wires all modules together and handles message routing.
 
-import { startAgent, stopAgent, agentRunning, isAgentAttachedTab, injectContext, applyCorrection, fetchAuditLog, auditLogToCsv, generateRunReplay } from './agent-engine.js';
+import { startAgent, stopAgent, agentRunning, isAgentAttachedTab, injectContext, applyCorrection, fetchAuditLog, auditLogToCsv, generateRunReplay, isAgentPaused } from './agent-engine.js';
 import { wrapMessageHandler, sendSilentUpdate } from './message-protocol.js';
 import { injectContentScript, sendMessageWithRetry, isValidUrl, detachAllDebuggees } from './tab-manager.js';
 import { setSPATransitionPending, notifyIfEnabled, stopSwKeepalive } from './shared-state.js';
@@ -30,9 +30,9 @@ chrome.storage.onChanged.addListener((changes, area) => {
   const nv = changes.pending_goal.newValue;
   if (!nv || nv.done || (Date.now() - (nv.ts || 0)) > 120000) return;
   (async () => {
-    try { await chrome.storage.local.set({ pending_goal: Object.assign({}, nv, { done: true }) }); } catch (e) { console.warn('[Sentinel] pending_goal storage failed:', e); }
+    try { await chrome.storage.local.set({ pending_goal: Object.assign({}, nv, { done: true }) }); } catch (e) {}
     if (agentRunning) return; // direct message path won the race — run underway
-
+    console.log('[Sentinel/SW] pending_goal received (SO-87 fallback) — starting agent...');
     try {
       await startAgent(nv.goal, {});
     } catch (e) {
@@ -70,6 +70,8 @@ import { generateHtmlReport, generateReplayReport } from './export-report.js';
 import * as pluginRegistry from './plugin-registry.js';
 
 // v10.3.1: Startup diagnostics
+console.log('[Sentinel/SW] Service worker starting...');
+console.log('[Sentinel/SW] All imports resolved successfully');
 
 // Service worker health heartbeat — confirms the SW event loop is alive
 chrome.alarms.create('sw_heartbeat', { periodInMinutes: 0.5 });
@@ -107,22 +109,22 @@ initScheduler();
       const age = Date.now() - (stored.agentStartTime || 0);
       // Only auto-resume if the run started less than 10 minutes ago
       if (age < 10 * 60 * 1000) {
-
+        console.log('[Sentinel/self-heal] Detected interrupted run. Goal:', stored.agentGoal, 'Age:', `${Math.floor(age/1000)}s`);
         // Check for checkpoint with more state
         const cp = await chrome.storage.session.get('agent_checkpoint');
         if (cp && cp.agent_checkpoint && cp.agent_checkpoint.lastGoal) {
-
+          console.log('[Sentinel/self-heal] Checkpoint found, resuming...');
           const { restoreFromCheckpoint, clearCheckpoint } = await import('./agent-engine.js');
           const result = await restoreFromCheckpoint();
           if (result.restored) {
             await clearCheckpoint();
-
+            console.log('[Sentinel/self-heal] State restored, restarting agent loop');
             const { startAgent } = await import('./agent-engine.js');
             // Get any active tab to restart on
             const tabs = await new Promise(resolve => {
               chrome.tabs.query({active: true, currentWindow: true}, (t) => {
                 if (chrome.runtime.lastError) {
-
+                  console.warn('[Sentinel/index] tabs.query lastError:', getErrorMessage(chrome.runtime.lastError));
                   resolve([]);
                   return;
                 }
@@ -139,11 +141,13 @@ initScheduler();
         }
       } else {
         // Stale run — clear the flag
-
+        console.log('[Sentinel/self-heal] Stale run detected (', Math.floor(age/ONE_MINUTE_MS), 'min old), clearing');
         await chrome.storage.session.remove(['agentRunning', 'agentGoal', 'agentStartTime']);
       }
     }
-  } catch (e) { console.warn('[Sentinel] session cleanup failed:', e); }
+  } catch (e) {
+    console.warn('[Sentinel/self-heal] Auto-resume check failed:', getErrorMessage(e));
+  }
 })();
 
 // ========== Context Menu Click Handler (v3.44) ==========
@@ -216,13 +220,55 @@ try {
 // for cross-origin iframe routing.
 addFrameRouterListeners();
 
-// ========== Content Script Auto-Injection Fallback ==========// Manifest content_scripts may fail to auto-inject on some Firefox versions.chrome.webNavigation.onCompleted.addListener(async (details) => {  if (details.frameId !== 0) return;  if (!details.tabId || details.tabId < 0) return;  const url = details.url || "";  if (!url || url.startsWith("chrome://") || url.startsWith("moz-extension://") || url.startsWith("about:") || url.startsWith("devtools://")) return;  try {    const alreadyAlive = await chrome.scripting.executeScript({      target: { tabId: details.tabId },      func: () => !!(window.__sentinelContentAlive === true)    });    if (alreadyAlive && alreadyAlive[0] && alreadyAlive[0].result === true) return;    await chrome.scripting.executeScript({      target: { tabId: details.tabId },      files: ["content/dom-utils.js", "content/highlight.js", "content/wait-utils.js", "content/dropdown-utils.js", "content/special-inputs.js", "content/overlay-detector.js", "content/frame-manager.js", "content/shadow-dom.js", "content/action-hud.js", "content/cursor.js", "content/index.js", "content/warm-scan.js", "content/quick-assist.js"]    });  } catch { /* tab may not be injectable yet */ }}, { url: [{ schemes: ["http", "https"] }] });
+// ========== Content Script Auto-Injection Fallback ==========
+// Manifest content_scripts may fail to auto-inject on some Firefox versions.
+// This fallback injects the bundle once the top-level document finishes
+// loading. The __sentinelContentAlive ping-gate makes it a no-op when the
+// manifest already injected the bundle, so the two paths never double-run.
+chrome.webNavigation.onCompleted.addListener(async (details) => {
+  if (details.frameId !== 0) return;
+  if (!details.tabId || details.tabId < 0) return;
+  const url = details.url || "";
+  if (!url || url.startsWith("chrome://") || url.startsWith("moz-extension://") || url.startsWith("about:") || url.startsWith("devtools://")) return;
+  try {
+    const alreadyAlive = await chrome.scripting.executeScript({
+      target: { tabId: details.tabId },
+      func: () => !!(window.__sentinelContentAlive === true)
+    });
+    if (alreadyAlive && alreadyAlive[0] && alreadyAlive[0].result === true) return;
+    await chrome.scripting.executeScript({
+      target: { tabId: details.tabId },
+      files: ["content/dom-utils.js", "content/highlight.js", "content/wait-utils.js", "content/dropdown-utils.js", "content/special-inputs.js", "content/overlay-detector.js", "content/frame-manager.js", "content/shadow-dom.js", "content/action-hud.js", "content/cursor.js", "content/index.js", "content/warm-scan.js", "content/quick-assist.js"]
+    });
+  } catch { /* tab may not be injectable yet */ }
+}, { url: [{ schemes: ["http", "https"] }] });
+
+
 
 // Schedule alarm listener + SW heartbeat
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   // v10.3.1: Heartbeat diagnostic
   if (alarm.name === 'sw_heartbeat') {
-
+    console.log('[Sentinel/SW] Heartbeat — service worker alive');
+    // (A1 fix 3) Watchdog tick: stalled runs get stopped, orphaned runs get
+    // resumed or their stale flags cleared — not just on SW wake anymore.
+    try {
+      const { runWatchdogTick } = await import('./sw-watchdog.js');
+      const verdict = await runWatchdogTick({
+        isRunning: () => agentRunning,
+        isPaused: () => isAgentPaused(),
+        getSessionState: async () => { try { return await chrome.storage.session.get(['agentRunning', 'agentGoal', 'agentStartTime']); } catch (_e) { return null; } },
+        getCheckpoint: async () => { try { const s2 = await chrome.storage.session.get('agent_checkpoint'); return (s2 && s2.agent_checkpoint) || null; } catch (_e) { return null; } },
+        now: () => Date.now(),
+        stopAgent,
+        startAgent,
+        restoreFromCheckpoint: async () => (await import('./agent-engine.js')).restoreFromCheckpoint(),
+        clearCheckpoint: async () => (await import('./agent-engine.js')).clearCheckpoint(),
+        clearSessionFlags: async () => { try { await chrome.storage.session.remove(['agentRunning', 'agentGoal', 'agentStartTime']); } catch (e) { console.warn('[Sentinel/watchdog] flag clear failed:', getErrorMessage(e)); } },
+        log: (lvl, msg, extra) => { const f = lvl === 'error' ? console.error : lvl === 'warn' ? console.warn : console.log; f(msg, extra || ''); }
+      });
+      if (verdict.action !== 'ok' && verdict.action !== 'idle') tel.info('lifecycle', 'SW watchdog action', verdict);
+    } catch (e) { console.warn('[Sentinel/watchdog] tick failed:', getErrorMessage(e)); }
     return;
   }
   if (alarm.name.startsWith('schedule-')) {
@@ -294,10 +340,11 @@ chrome.tabs.onCreated.addListener((tab) => {
   }
 });
 
+
 // ========== Unified Message Handler ==========
 chrome.runtime.onMessage.addListener(wrapMessageHandler(async (request, sender) => {
   switch (request.action) {
-
+    // Diagnostic ping — remove after startup bug is fixed
     case 'ping': {
       return { pong: true, ts: Date.now(), agentRunning: typeof agentRunning !== 'undefined' ? agentRunning : 'unknown' };
     }
@@ -497,7 +544,7 @@ chrome.runtime.onMessage.addListener(wrapMessageHandler(async (request, sender) 
           historyLength: result.historyLength,
           memoryKeys: result.memoryKeys
         });
-
+        console.log('[Sentinel/SW] resume_from_checkpoint — starting agent...');
         return await startAgent(result.goal, sender);
       } catch (e) {
         console.error('[Sentinel/SW] resume_from_checkpoint error:', e);
@@ -628,14 +675,18 @@ chrome.runtime.onMessage.addListener(wrapMessageHandler(async (request, sender) 
     case 'run_agent_loop': {
       // v10.3.1: Explicit error catch for startAgent — surfaces LLM/config errors
       try {
-
+        console.log('[Sentinel/SW] run_agent_loop received — starting agent...');
         // v20.2.1: optional explicit tabId — lets API callers target a specific
         // tab instead of the sender's tab / active tab (programmatic runs).
-        const effectiveSender = (request.tabId && typeof request.tabId === 'number')
-          ? { tab: { id: request.tabId } }
-          : sender;
-        const result = await startAgent(request.goal, effectiveSender);
-
+        // v20.2.1 + A1 fix 2: explicit tabId passes through startAgent's gate,
+        // which validates it is a real web page (the old synthetic sender had no
+        // URL, so the SO-85 extension-page check never saw this path).
+        const result = await startAgent(
+          request.goal,
+          sender,
+          (request.tabId && typeof request.tabId === 'number') ? request.tabId : undefined
+        );
+        console.log('[Sentinel/SW] startAgent returned successfully');
         return result;
       } catch (agentErr) {
         // (SO-87) The pending_goal storage fallback can win the race against
@@ -768,6 +819,7 @@ chrome.runtime.onMessage.addListener(wrapMessageHandler(async (request, sender) 
       return await enumerateFrames(getActiveTabId());
     }
 
+    // Template CRUD
     case 'template_list':
       return await listTemplates();
 
@@ -1214,17 +1266,18 @@ if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onSuspend)
     // Detach all debugger connections to prevent port conflicts
     try {
       detachAllDebuggees().catch((e) => {
-        console.warn('[Sentinel] detachAllDebuggees catch failed', e);
-
+        console.warn('[Sentinel] Failed to detach debuggees on suspend:', getErrorMessage(e));
       });
-    } catch (e) { console.warn('[Sentinel] detachAllDebuggees failed:', e); }
+    } catch (e) {
+      console.warn('[Sentinel] Error detaching debuggees on suspend:', getErrorMessage(e));
+    }
 
     // Stop all keepalive intervals
     try {
       stopSwKeepalive('default');
       stopSwKeepalive('agent-loop');
     } catch (e) {
-      console.warn('[Sentinel] stopSwKeepalive catch failed', e);
+      console.warn('[Sentinel] Error stopping keepalive on suspend:', getErrorMessage(e));
     }
   });
 }

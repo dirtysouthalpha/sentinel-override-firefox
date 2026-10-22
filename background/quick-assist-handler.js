@@ -16,7 +16,7 @@ import { API_TIMEOUT_MS } from './constants.js';
  */
 export async function handleQuickAssist(prompt) {
   const config = await getActiveProvider();
-  const _isLocalEndpoint = /^(https?:)?\/\/(127\.0\.0\.1|localhost|\[::1\])([:\/]|$)/i.test(config ? (config.endpoint || '') : '');
+  const _isLocalEndpoint = /^(https?:)?\/\/(127\.0\.0\.1|localhost|\[::1\])([:/]|$)/i.test(config ? (config.endpoint || '') : '');
   if (!config || (!config.apiKey && !_isLocalEndpoint)) {
     throw new Error('No API key configured. Open Sentinel Override settings to set up an LLM provider.');
   }

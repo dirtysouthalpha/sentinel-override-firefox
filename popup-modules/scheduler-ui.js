@@ -80,7 +80,7 @@ function hideSchedulesPanel() {
 function loadTemplatesCache() {
   chrome.runtime.sendMessage({ action: 'template_list' }, (response) => {
     if (_hasLastError() || !response) {
-
+      console.warn('[Sentinel/scheduler-ui] Template list fetch failed:', _getLastErrorMessage() || 'No response');
       return;
     }
     if (response.ok && Array.isArray(response.data)) {
@@ -301,7 +301,7 @@ function populateTemplateDropdown(preselectId) {
 
   chrome.runtime.sendMessage({ action: 'template_list' }, (response) => {
     if (_hasLastError() || !response) {
-
+      console.warn('[Sentinel/scheduler-ui] Template list fetch failed in populateTemplateDropdown:', _getLastErrorMessage() || 'No response');
       dropdown.innerHTML = '<option value="">Error loading templates</option>';
       return;
     }
@@ -371,6 +371,7 @@ document.getElementById('sch-interval')?.addEventListener('change', (e) => {
   if (customInterval) customInterval.style.display = interval === 'custom' ? '' : 'none';
 });
 
+// Template selection: load params
 document.getElementById('sch-template-id')?.addEventListener('change', (e) => {
   const templateId = e.target.value;
   const container = document.getElementById('sch-template-params');

@@ -652,7 +652,7 @@ function evaluateCanaryHealth(sample) {
  * @returns {void}
  */
 function triggerRollback(reason) {
-
+  console.warn('[Sentinel/Canary] Automatic rollback triggered:', reason);
   canaryState.rollbackTriggered = true;
   canaryState.active = false;
   

@@ -78,7 +78,7 @@ export async function enumerateFrames(tabId) {
       try {
         mainOrigin = new URL(mainFrame.url).origin;
       } catch (e) {
-
+        console.warn('[Sentinel/frame-router] URL parse failed for main frame:', getErrorMessage(e));
         mainOrigin = mainFrame.url;
       }
     }
@@ -88,7 +88,7 @@ export async function enumerateFrames(tabId) {
       try {
         frameOrigin = new URL(f.url).origin;
       } catch (e) {
-
+        console.warn('[Sentinel/frame-router] URL parse failed for frame:', getErrorMessage(e));
         frameOrigin = f.url || '';
       }
 
@@ -357,7 +357,7 @@ async function runCommandInFrame(command) {
           try {
             clone.querySelectorAll(skipSelectors.join(',')).forEach(el => el.remove());
           } catch(e) {
-
+            console.warn('[Sentinel/frame-router] DOM cleanup failed:', _errMsg(e));
           }
           content = (clone.innerText || clone.textContent || '').replace(_multiNlRe, '\n\n').trim();
         }
@@ -367,7 +367,7 @@ async function runCommandInFrame(command) {
           try {
             bodyClone.querySelectorAll(skipSelectors.join(',')).forEach(el => el.remove());
           } catch(e) {
-
+            console.warn('[Sentinel/frame-router] Body cleanup failed:', _errMsg(e));
           }
           content = (bodyClone.innerText || '').replace(_multiNlRe, '\n\n').trim();
         }

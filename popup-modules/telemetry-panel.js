@@ -318,7 +318,7 @@ const ERROR_WARN_LEVEL_RE = /^(error|warn)$/;
             (e.payload ? `  ${JSON.stringify(e.payload)}` : '')
           ).join('\n');
         } catch (stringifyErr) {
-
+          console.warn('[Sentinel] Failed to stringify event payload:', getErrorMessage(stringifyErr));
           text = filtered.map(e =>
             `${_formatTs(e.ts)} [${e.level}/${e.category}] ${getErrorMessage(e)}` +
             '  [payload omitted - circular or non-serializable]'
