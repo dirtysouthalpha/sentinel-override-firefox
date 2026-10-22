@@ -18,6 +18,12 @@ import { exportTemplate, exportAllTemplates, validateImport, importTemplates, ex
 // verbosity gate, console mirror, and panel broadcast all apply uniformly.
 // (3.27.0) Also exposes Past Runs queries to the popup-side panel.
 import { tel, listPersistedRuns, loadPersistedRun, deletePersistedRun } from './telemetry.js';
+// (2.1) The same capability gate the run loop uses. External callers (popup,
+// programmatic API, the Firefox compat layer) reach actions through this file,
+// so the gate has to be applied here too — a message arriving on the runtime
+// channel must not be a route around the loop's choke point.
+import { checkCapability, loadGrantedCapabilities } from './capabilities.js';
+import { validateAction } from './action-schema.js';
 
 // (SO-87) Pending-goal fallback: a popup that dies mid-dispatch (sender-death
 // during SW cold start silently eats the run_agent_loop message) still leaves
@@ -660,6 +666,28 @@ chrome.runtime.onMessage.addListener(wrapMessageHandler(async (request, sender) 
       const cmd = request.command;
       if (!cmd || typeof cmd !== 'object' || cmd === null) throw new Error('execute_command: missing or invalid command object');
 
+      // (2.1) Dispatch boundary for external callers. Two checks, both
+      // fail-closed, both in code rather than in the prompt:
+      //   1. the action schema — unknown action types, unknown fields, wrong
+      //      value types, and the reserved trust markers (approvalGranted,
+      //      _visionIndex, and any `_`/`__`-prefixed field) are rejected
+      //      outright rather than passed to the content script. This is the
+      //      same validateAction() call Chrome makes. It is not itself an
+      //      authorisation boundary — a schema-valid execute_js still has to
+      //      clear the gate below — but it is what stops a model from forging
+      //      the fields the gate reads as evidence of operator consent;
+      //   2. the capability gate — a blue capability needs an operator grant,
+      //      and a grant never comes from the message itself.
+      const _schemaCheck = validateAction(cmd);
+      if (!_schemaCheck.valid) {
+        throw new Error(`execute_command: rejected — ${_schemaCheck.error}`);
+      }
+      const _grants = await loadGrantedCapabilities();
+      const _capCheck = checkCapability(cmd, _grants, { currentTabId: tab });
+      if (!_capCheck.allowed) {
+        throw new Error(`execute_command: blocked — ${_capCheck.reason}`);
+      }
+
       // Handle navigate inline (no content script needed)
       if (cmd.type === 'navigate') {
         if (!isValidUrl(cmd.url)) throw new Error('Invalid URL provided');
@@ -811,6 +839,16 @@ chrome.runtime.onMessage.addListener(wrapMessageHandler(async (request, sender) 
       }
       if (!command || typeof command !== 'object' || command === null) {
         return { ok: false, error: 'execute_in_frame: missing or invalid command' };
+      }
+      // (2.1) This relay exists only for frames the content script could not
+      // reach, so it is a cross-origin frame access by construction and needs
+      // the operator's cross_origin_frame grant. The content script forwards the
+      // command verbatim, so an approval the operator gave for this action in
+      // the run loop is visible here as command.approvalGranted.
+      const _frameGrants = await loadGrantedCapabilities();
+      const _frameCheck = checkCapability({ type: 'execute_in_frame', approvalGranted: command.approvalGranted === true }, _frameGrants);
+      if (!_frameCheck.allowed) {
+        return { ok: false, error: `execute_in_frame: blocked — ${_frameCheck.reason}` };
       }
       return await executeInFrame(tabId, frameId, command);
     }

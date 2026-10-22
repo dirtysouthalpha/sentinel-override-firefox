@@ -24,6 +24,7 @@ async function _effectiveSystemPrompt(provider) {
   }
 }
 import { API_TIMEOUT_MS, PLATFORM_CTX_CACHE_TTL_MS, ONE_SECOND_MS, TWO_SECONDS_MS, VISION_FETCH_TIMEOUT_MS } from './constants.js';
+import { validateAction } from './action-schema.js';
 
 // Constants for response parsing - avoid recreating on every call
 const VALID_ACTION_TYPES = new Set(['click', 'type', 'navigate', 'scroll', 'select', 'hover', 'press_key',
@@ -36,6 +37,11 @@ const VALID_ACTION_TYPES = new Set(['click', 'type', 'navigate', 'scroll', 'sele
   'drag_at', 'right_click_at', 'double_click_at', 'scroll_at', 'zoom_at', 'triple_click_at',
   'lookup', 'run_remote_command', 'verify', 'repeat_for_each',
   'smart_navigate', 'batch', 'find']);
+
+// Exported so tests can assert parity with background/action-schema.js
+// (ACTION_SCHEMA). The two must not drift: the schema is the field-level
+// description, this set is the accept/reject gate.
+export { VALID_ACTION_TYPES };
 
 // Precompiled regex for extracting JSON from markdown code blocks
 const CODE_BLOCK_REGEX = /```(?:json)?\s*\n?([\s\S]*?)\n?```/;
@@ -2594,7 +2600,12 @@ export function extractFirstJsonObject(str) {
       const candidate = str.substring(start, end + 1);
       try {
         const parsed = JSON.parse(candidate);
-        if (parsed.type && VALID_ACTION_TYPES.has(parsed.type)) return candidate;
+        // A candidate is only an "action" if it is both a known type and
+        // schema-valid (no unknown/reserved fields, no wrong value types). An
+        // invalid object is skipped rather than returned, so the caller falls
+        // through to parseLLMResponse's rejecting path instead of executing a
+        // half-understood action.
+        if (parsed.type && VALID_ACTION_TYPES.has(parsed.type) && validateAction(parsed).valid) return candidate;
       } catch (e) { console.warn('[Sentinel/llm] JSON parse failed:', getErrorMessage(e)); }
       searchFrom = end + 1;
     } else {
@@ -2731,6 +2742,17 @@ export function parseLLMResponse(content) {
     if (!parsed.type && parsed.next_action && typeof parsed.next_action === 'object') parsed = parsed.next_action;
     if (!parsed.type) throw new Error('Missing type field');
     if (!VALID_ACTION_TYPES.has(parsed.type)) throw new Error(`Invalid command type: ${parsed.type}`);
+    // Reject unknown fields, reserved engine-trust fields, and wrong value
+    // types with a message the model can act on. Thrown (not silently dropped)
+    // so the caller surfaces it as a retryable parse error.
+    //
+    // This is the parse-path half of the trust boundary. The dispatch boundary
+    // in agent-engine.js strips only the four names it knows about
+    // (approvalGranted, autoApproved, approved, _engineInternal); without this
+    // check a model could set `_visionIndex` or any other `_`-prefixed field
+    // and have the engine read it as vision provenance the model never earned.
+    const _schemaResult = validateAction(parsed);
+    if (!_schemaResult.valid) throw new Error(`Invalid ${parsed.type} action: ${_schemaResult.error}`);
     if (__reasoning) parsed.__reasoning = __reasoning;
     return parsed;
   } catch (err) {
@@ -2743,7 +2765,9 @@ export function parseLLMResponse(content) {
       try {
         const sanitized = sanitizeLlmJson(content.trim());
         const parsed = JSON.parse(sanitized);
-        if (parsed && parsed.type && VALID_ACTION_TYPES.has(parsed.type)) return parsed;
+        // Same schema gate as the primary path — the salvage route must not
+        // become a way to slip an unknown field or reserved marker through.
+        if (parsed && parsed.type && VALID_ACTION_TYPES.has(parsed.type) && validateAction(parsed).valid) return parsed;
       } catch (e) { console.warn('[Sentinel/llm] Regex salvage failed:', getErrorMessage(e)); }
       try {
         const salvaged = regexSalvageFinishOrNote(content);

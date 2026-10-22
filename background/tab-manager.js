@@ -4,6 +4,11 @@
 
 import { getErrorMessage, sleep } from './error-utils.js';
 import { ONE_SECOND_MS, TWO_SECONDS_MS, THREE_SECONDS_MS, FIVE_SECONDS_MS, ONE_MINUTE_MS, MAX_LOG_ENTRY_LENGTH } from './constants.js';
+// Credential redaction layer. Everything the model can read out of the network
+// summary passes through here first: request/response header values, credential
+// query params in URLs, and console entry source URLs. This is defence-in-depth
+// on top of the `network_read` capability gate, never a replacement for it.
+import { redactUrl, redactHeaders } from './secrets-redaction.js';
 
 // ========== Page Load Waiting ==========
 let pageLoadConfig = {
@@ -302,7 +307,8 @@ let onDetachListenerInstalled = false;
 // of recent entries. Listener installation is tracked per-tab so we don't
 // double-subscribe across re-attaches.
 const consoleBuffers = new Map();   // tabId -> Array<{level,text,url,line,ts}>
-const networkBuffers = new Map();   // tabId -> Map<requestId, {method,url,status,duration,startTs,endTs,type}>
+const networkBuffers = new Map();   // tabId -> Map<requestId, {method,url,status,duration,startTs,endTs,type,requestHeaders,responseHeaders,failed,errorText}>
+                                    // url/requestHeaders/responseHeaders are stored REDACTED (see secrets-redaction.js).
 const observabilityListenersInstalled = new Set(); // tabIds
 const CONSOLE_BUFFER_MAX = 200;
 const NETWORK_BUFFER_MAX = 200;
@@ -321,7 +327,11 @@ function pushConsoleEntry(tabId, entry) {
     buf = [];
     consoleBuffers.set(tabId, buf);
   }
-  buf.push(entry);
+  // Redact the source URL before storage: console entries carry the document /
+  // script URL, which can itself hold a credential query param. Entry text is
+  // left alone here — free-form text needs the pattern scanner in telemetry.js,
+  // not this structural layer.
+  buf.push({ ...entry, url: typeof entry.url === 'string' ? redactUrl(entry.url) : entry.url });
   const toRemove = buf.length - CONSOLE_BUFFER_MAX;
   if (toRemove > 0) buf.splice(0, toRemove);
 }
@@ -331,10 +341,18 @@ function pushConsoleEntry(tabId, entry) {
  * Creates a new tracked entry with method, URL, type, and start timestamp.
  * Evicts oldest entries when the buffer exceeds NETWORK_BUFFER_MAX.
  *
+ * SECURITY: the URL and the request headers are redacted (via
+ * background/secrets-redaction.js) BEFORE they are stored, so no session cookie,
+ * bearer token, basic-auth password, API key, or OAuth `?code=`/`?access_token=`
+ * value ever lands in the buffer that readNetworkRequests hands to the model.
+ * `params.request.postData` is deliberately NOT stored: a request body can carry
+ * credentials (login forms, API payloads) and body-shaped redaction is not what
+ * this layer does, so the safest move is to keep dropping it as before.
+ *
  * @param {number} tabId - Chrome tab ID.
  * @param {object} params - CDP Network.requestWillBeSent event params.
  * @param {string} params.requestId - Unique request identifier.
- * @param {{ method: string, url: string }} [params.request] - HTTP request info.
+ * @param {{ method: string, url: string, headers?: object }} [params.request] - HTTP request info.
  * @param {string} [params.type] - Resource type (Document, XHR, Script, etc.).
  */
 function recordNetworkStart(tabId, params) {
@@ -343,14 +361,16 @@ function recordNetworkStart(tabId, params) {
   if (!params || !params.requestId) return;
   buf.set(params.requestId, {
     method: (params.request && params.request.method) || '',
-    url: (params.request && params.request.url) || '',
+    url: redactUrl((params.request && params.request.url) || ''),
     type: params.type || '',
     status: 0,
     startTs: Date.now(),
     endTs: 0,
     duration: 0,
     failed: false,
-    errorText: ''
+    errorText: '',
+    requestHeaders: redactHeaders((params.request && params.request.headers) || null),
+    responseHeaders: null
   });
   // Bound the map size by trimming oldest entries.
   if (buf && buf.size > NETWORK_BUFFER_MAX) {
@@ -367,10 +387,14 @@ function recordNetworkStart(tabId, params) {
  * Record a network response in the tab's network buffer.
  * Updates the matching request entry with status code, end timestamp, and duration.
  *
+ * SECURITY: response headers are redacted before storage. `set-cookie` in
+ * particular is the session token being handed to the page, so its value is
+ * replaced with `[REDACTED]` and never emitted verbatim.
+ *
  * @param {number} tabId - Chrome tab ID.
  * @param {object} params - CDP Network.responseReceived event params.
  * @param {string} params.requestId - Unique request identifier.
- * @param {{ status: number }} [params.response] - HTTP response with status code.
+ * @param {{ status: number, headers?: object }} [params.response] - HTTP response.
  */
 function recordNetworkResponse(tabId, params) {
   const buf = networkBuffers.get(tabId);
@@ -380,6 +404,9 @@ function recordNetworkResponse(tabId, params) {
   e.status = (params.response && params.response.status) || 0;
   e.endTs = Date.now();
   e.duration = e.endTs - e.startTs;
+  if (params.response && params.response.headers) {
+    e.responseHeaders = redactHeaders(params.response.headers);
+  }
 }
 /**
  * Record a failed network request in the tab's network buffer.
@@ -399,6 +426,33 @@ function recordNetworkFailure(tabId, params) {
   e.errorText = params.errorText || 'failed';
   e.endTs = Date.now();
   e.duration = e.endTs - e.startTs;
+}
+
+/**
+ * Merge the headers carried by a CDP `Network.*ExtraInfo` event into an existing
+ * buffer entry. `requestWillBeSentExtraInfo` / `responseReceivedExtraInfo` are
+ * the events that carry the headers `requestWillBeSent` omits — most importantly
+ * the `Cookie` header and any `Set-Cookie` — so they are exactly the events a
+ * credential leak would ride in on. Headers are redacted before merging.
+ *
+ * @param {number} tabId - Chrome tab ID.
+ * @param {object} params - CDP Network.requestWillBeSentExtraInfo /
+ *   Network.responseReceivedExtraInfo event params.
+ * @param {string} params.requestId - Unique request identifier.
+ * @param {object} [params.headers] - Extra header map for this request/response.
+ * @param {'request'|'response'} direction - Which side of the exchange to merge into.
+ */
+function recordNetworkExtraHeaders(tabId, params, direction) {
+  const buf = networkBuffers.get(tabId);
+  if (!buf || !params || !params.requestId || !params.headers) return;
+  const e = buf.get(params.requestId);
+  if (!e) return;
+  const redacted = redactHeaders(params.headers);
+  if (direction === 'response') {
+    e.responseHeaders = { ...(e.responseHeaders || {}), ...redacted };
+  } else {
+    e.requestHeaders = { ...(e.requestHeaders || {}), ...redacted };
+  }
 }
 
 // Install Log + Network listeners on a tab once. Caller must already have
@@ -480,8 +534,12 @@ function installObservabilityEventHook() {
           });
         } else if (method === 'Network.requestWillBeSent') {
           recordNetworkStart(tabId, params);
+        } else if (method === 'Network.requestWillBeSentExtraInfo') {
+          recordNetworkExtraHeaders(tabId, params, 'request');
         } else if (method === 'Network.responseReceived') {
           recordNetworkResponse(tabId, params);
+        } else if (method === 'Network.responseReceivedExtraInfo') {
+          recordNetworkExtraHeaders(tabId, params, 'response');
         } else if (method === 'Network.loadingFailed') {
           recordNetworkFailure(tabId, params);
         }
@@ -511,7 +569,13 @@ export function readConsoleMessages(tabId, options) {
   } else if (/^warn(ing)?$/.test(filter)) {
     out = out.filter(e => /warn/i.test(e.level));
   }
-  return out.slice(-limit);
+  // Belt-and-braces: re-run URL redaction on the way out (idempotent) so a
+  // future writer that forgets to redact at push time still cannot leak a
+  // credential query param into the model-facing result.
+  return out.slice(-limit).map(e => ({
+    ...e,
+    url: typeof e.url === 'string' ? redactUrl(e.url) : e.url
+  }));
 }
 
 /**
@@ -524,7 +588,9 @@ export function readConsoleMessages(tabId, options) {
  * @param {number} [options.limit=30] - Maximum entries to return.
  * @param {'failed'|'4xx'|'5xx'} [options.filter] - Status-code filter.
  * @param {string} [options.url_includes] - Only include URLs containing this substring.
- * @returns {Array<{method:string,url:string,status:number,type:string,duration_ms:number,failed:boolean,error:string}>}
+ * @returns {Array<{method:string,url:string,status:number,type:string,duration_ms:number,failed:boolean,error:string,request_headers:object,response_headers:object}>}
+ *   All credential-bearing values are redacted to `[REDACTED]`; header names and
+ *   non-sensitive headers are preserved.
  */
 export function readNetworkRequests(tabId, options) {
   const buf = networkBuffers.get(tabId);
@@ -549,12 +615,19 @@ export function readNetworkRequests(tabId, options) {
   arr.sort((a, b) => b.startTs - a.startTs);
   return arr.slice(0, limit).map(e => ({
     method: e.method,
-    url: (e.url || '').substring(0, 300),
+    // Redact again on the way out (idempotent) — the buffer is already redacted,
+    // but this guarantees nothing un-redacted can reach the model if a future
+    // writer bypasses recordNetworkStart.
+    url: redactUrl(e.url || '').substring(0, 300),
     status: e.status,
     type: e.type,
     duration_ms: e.duration,
     failed: e.failed,
-    error: e.errorText || ''
+    error: e.errorText || '',
+    // Header NAMES and non-sensitive header values are preserved for debugging;
+    // cookie values, Authorization, API keys, Set-Cookie, ... are `[REDACTED]`.
+    request_headers: redactHeaders(e.requestHeaders) || {},
+    response_headers: redactHeaders(e.responseHeaders) || {}
   }));
 }
 
@@ -1034,11 +1107,23 @@ export async function cdpDispatchType(tabId, text, options = {}) {
  * @param {object} [options]
  * @param {number} [options.timeout=8000] - Hard wall-clock timeout in ms.
  *                                          Clamped to [500, 60000].
- * @returns {Promise<{ok: boolean, value?: any, error?: string, cspBlocked?: boolean}>}
+ * @param {boolean} [options.approvalMode] - When true, the caller is running
+ *   under approval mode and this call is refused unless approvalGranted is set.
+ * @param {boolean} [options.approvalGranted] - The operator's explicit approval
+ *   for this specific command.
+ * @returns {Promise<{ok: boolean, value?: any, error?: string, cspBlocked?: boolean, blocked?: boolean}>}
  */
 export async function cdpExecuteJs(tabId, code, options = {}) {
   if (typeof code !== 'string' || !code.length) {
     return { ok: false, error: 'No code provided' };
+  }
+  // Approval gate (defence-in-depth). CDP Runtime.evaluate runs with full page
+  // privileges and bypasses page CSP, so model-authored execute_js must never
+  // reach it without the same operator approval the content-script path
+  // requires. Callers opt in by passing approvalMode; internal engine helpers
+  // (DOM probes, vision scaffolding, scroll) do not, so they are unaffected.
+  if (options.approvalMode && !options.approvalGranted) {
+    return { ok: false, blocked: true, error: 'BLOCKED: execute_js requires operator approval (CDP path refused while approval mode is on).' };
   }
   const timeout = Math.max(500, Math.min(ONE_MINUTE_MS, Number(options.timeout) || 8000)) || 8000;
   try {

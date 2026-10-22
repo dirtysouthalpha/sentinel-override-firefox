@@ -7,6 +7,7 @@ import { semanticFind } from './semantic-find.js';
 import { resolveStartTab, TAB_GATE } from './start-tab-gate.js';
 import { getPlatformProfile } from './platforms/index.js';
 import { waitForPageLoad, waitForPageReady, injectContentScript, sendMessageWithRetry, takeScreenshot, isValidUrl, getTabInfo, detachAllDebuggees, cdpDispatchClick, cdpDispatchDrag, cdpDispatchWheel, cdpDispatchZoom, cdpDispatchType, cdpDispatchKey, cdpExecuteJs, readConsoleMessages, readNetworkRequests } from './tab-manager.js';
+import { checkCapability, effectiveGrantedCapabilities, stripModelTrustFields } from './capabilities.js';
 import { MAX_PAGE_TEXT_LENGTH, TEXT_SAMPLE_LENGTH as _TEXT_SAMPLE_LENGTH, MAX_CDP_RESULT_LENGTH, API_CACHE_TTL_MS, BATCH_MODE_CACHE_TTL_MS, MAX_WAIT_TIME_MS, ONE_HUNDRED_MS, ONE_HUNDRED_FIFTY_MS, TWO_HUNDRED_MS, THREE_HUNDRED_MS, FOUR_HUNDRED_MS, FIVE_HUNDRED_MS, SIX_HUNDRED_MS, EIGHT_HUNDRED_MS, ONE_SECOND_MS, TWO_SECONDS_MS, THREE_SECONDS_MS, FIVE_SECONDS_MS, TEN_SECONDS_MS, FIFTEEN_SECONDS_MS, TWENTY_SECONDS_MS, THIRTY_SECONDS_MS, FORTY_FIVE_SECONDS_MS, ONE_MINUTE_MS, FIVE_MINUTES_MS, ONE_HOUR_MS, ONE_DAY_MS } from './constants.js';
 
 // v4.0 VISION-FIRST MODULES
@@ -25,6 +26,18 @@ const EXTRACT_TYPE_RE = /^extract(_list)?$/;
 
 // Precompile regex for non-mutating action types
 const NON_MUTATING_ACTIONS_RE = /^(note|extract|extract_list|scroll|scroll_at|zoom_at|wait_for_text|wait_for_element|wait_for_navigation|read_page)$/;
+
+// Action types the loop dispatches WITHOUT an operator approval prompt: the
+// read-only probes, waits and annotations it has always run unprompted. This
+// set is about the approval prompt only — every one of these still passes the
+// capability gate, which is what stops a privileged read (read_network_requests
+// against another tab) when no grant exists. `finish` needs no entry: it is
+// handled above the gate and dispatches nothing.
+const NO_APPROVAL_ACTIONS = new Set([
+  'note', 'verify', 'lookup', 'wait', 'repeat_for_each',
+  'read_console_messages', 'read_network_requests',
+  'wait_for_text', 'wait_for_element', 'wait_for_navigation',
+]);
 
 // Precompile regex for element tag matching in hot-path observation loop
 const ELEMENT_TAG_FORM_RE = /^form$/i;
@@ -3044,11 +3057,30 @@ function _isUnproductiveJsResult(raw) {
  * Run a single execute_js attempt via CDP first, falling back to content
  * script if CDP attach is denied (chrome:// pages, devtools, etc.).
  * Returns the raw "JS Result: ..." string or an error string.
+ *
+ * Approval gate (security): model-authored execute_js must never bypass the
+ * approval requirement by taking the privileged CDP path. When approval mode
+ * is on and the command was not explicitly approved (`approvalGranted`), we
+ * refuse outright instead of falling back to the content script — the CDP
+ * path is "preferred" precisely because it bypasses page CSP, so silently
+ * downgrading to it would be a security hole. Callers that reach here with
+ * approval mode on have already run the operator approval round-trip in the
+ * main loop; `approvalGranted` reflects that result.
+ *
+ * @param {number} tabId
+ * @param {string} code
+ * @param {number} timeout
+ * @param {boolean} [approvalGranted] - true when the operator explicitly approved this command.
  */
-async function _runExecuteJsOnce(tabId, code, timeout) {
+async function _runExecuteJsOnce(tabId, code, timeout, approvalGranted) {
+  const approvalMode = !!(_runSettings && _runSettings.approvalMode);
+  if (approvalMode && !approvalGranted) {
+    return 'BLOCKED: execute_js requires operator approval (CDP path refused while approval mode is on).';
+  }
+
   // CDP path (preferred -- bypasses page CSP)
   try {
-    const cdpResult = await cdpExecuteJs(tabId, code, { timeout });
+    const cdpResult = await cdpExecuteJs(tabId, code, { timeout, approvalMode, approvalGranted });
     if (cdpResult && cdpResult.ok) {
       const valStr = cdpResult.value === undefined || cdpResult.value === null
         ? ''
@@ -3092,17 +3124,24 @@ async function _runExecuteJsOnce(tabId, code, timeout) {
  *
  * Returns { raw, strategy }. raw is the same shape the rest of the
  * pipeline expects; strategy is for logging / forensic run log.
+ *
+ * @param {number} tabId
+ * @param {string} originalCode
+ * @param {number} timeout
+ * @param {boolean} [approvalGranted] - threaded through to _runExecuteJsOnce so the
+ *   CDP approval gate sees the operator's decision. Engine-generated fallback
+ *   strategies inherit the same approval as the original command.
  */
-async function _runExecuteJsWithRetryLadder(tabId, originalCode, timeout) {
+async function _runExecuteJsWithRetryLadder(tabId, originalCode, timeout, approvalGranted) {
   // Strategy 1: LLM's original code
-  let raw = await _runExecuteJsOnce(tabId, originalCode || '', timeout);
+  let raw = await _runExecuteJsOnce(tabId, originalCode || '', timeout, approvalGranted);
   if (!_isUnproductiveJsResult(raw)) {
     return { raw, strategy: 'original' };
   }
 
   // Strategy 2: body.innerText fallback (covers most LLM-extraction failures)
   const FB_BODY_TEXT = 'return (document.body && document.body.innerText) ? document.body.innerText.substring(0, 8000) : "";';
-  raw = await _runExecuteJsOnce(tabId, FB_BODY_TEXT, timeout);
+  raw = await _runExecuteJsOnce(tabId, FB_BODY_TEXT, timeout, approvalGranted);
   if (!_isUnproductiveJsResult(raw)) {
     return { raw, strategy: 'body_text_fallback' };
   }
@@ -3110,7 +3149,7 @@ async function _runExecuteJsWithRetryLadder(tabId, originalCode, timeout) {
   // Strategy 3: aggregate visible-element text (SPA-heavy sites where
   // body.innerText returns just the loading state)
   const FB_VISIBLE = "return Array.from(document.querySelectorAll('h1,h2,h3,h4,p,td,li,a,span,div')).map(e => (e.innerText || '').trim()).filter(t => t && t.length > 3).slice(0, 300).join('\\n').substring(0, 8000);";
-  raw = await _runExecuteJsOnce(tabId, FB_VISIBLE, timeout);
+  raw = await _runExecuteJsOnce(tabId, FB_VISIBLE, timeout, approvalGranted);
   if (!_isUnproductiveJsResult(raw)) {
     return { raw, strategy: 'visible_text_fallback' };
   }
@@ -3272,6 +3311,25 @@ function _detectActionTypeLoop(history, _agentMemory) {
 
 // ========== Run Setup Helpers ==========
 
+/**
+ * Pure decision helper for the run-loop credit gate. Given the response from
+ * the background's `check_credit_limit` message, decide whether the run must
+ * stop because the daily spend cap is exhausted.
+ *
+ * Kept pure and exported so the budget gate is unit-testable without spinning
+ * up the whole agent loop. A missing/failed probe (`null`) never stops a run —
+ * we only stop on an explicit `allowed === false`.
+ *
+ * @param {{allowed?: boolean, usage?: {cost?: number}, limit?: number}|null} credit
+ * @returns {{stop: boolean, summary: string}}
+ */
+function _evaluateCreditLimit(credit) {
+  if (!credit || credit.allowed !== false) return { stop: false, summary: '' };
+  const spent = Number((credit.usage && credit.usage.cost) || 0).toFixed(2);
+  const cap = Number(credit.limit || 0).toFixed(2);
+  return { stop: true, summary: `Daily credit limit reached ($${spent} of $${cap}). Increase the limit in Settings or wait until tomorrow.` };
+}
+
 // Load run-stable settings, initialize module-level state, and return the
 // (possibly context-prepended) goal string. Called once at the start of each run.
 async function _initRunState(goal) {
@@ -3282,18 +3340,33 @@ async function _initRunState(goal) {
     stored = await chrome.storage.local.get([
       'agent_history', 'agent_context', 'agent_memory', 'expectedTenant',
       'ticketMode', 'ticketFormat', 'approvalMode', 'useTrustedInput',
-      'quickMode',
+      'quickMode', 'grantedCapabilities',
     ]);
   } catch (e) {
     console.warn('[Sentinel] runAgentLoop settings load failed:', getErrorMessage(e));
     stored = {};
   }
+  // Fail closed: if the settings read threw, `stored` is {} and the grants
+  // below resolve to the empty set — an unreadable grant list must never be
+  // treated as "all granted".
+  const _grantedCapabilities = effectiveGrantedCapabilities(
+    (stored && stored.approvalMode) ?? true,
+    stored && stored.grantedCapabilities
+  );
   _runSettings = {
     ticketMode:      stored.ticketMode     ?? false,
     ticketFormat:    stored.ticketFormat   ?? 'standard',
-    approvalMode:    stored.approvalMode   ?? false,
+    // Default ON to match popup-modules/chat.js loadApprovalMode(). A fresh
+    // install that has never opened the popup has no stored value; treating
+    // that as `false` would run every action (including execute_js) with no
+    // approval gate. Fail closed.
+    approvalMode:    stored.approvalMode   ?? true,
     useTrustedInput: stored.useTrustedInput ?? false,
     quickMode:       stored.quickMode      ?? false,
+    // Stored as an array (not a Set) because _runSettings is spread into the
+    // run snapshot and may round-trip through JSON; normalizeGrants() accepts
+    // either. Computed once per run so the per-step gate stays pure.
+    grantedCapabilities: [..._grantedCapabilities],
   };
   expectedTenant = (stored && typeof stored.expectedTenant === 'string') ? stored.expectedTenant.trim() : null;
   detectedTenant = null;
@@ -3580,6 +3653,30 @@ async function runAgentLoop(goal, workingTabId) {
         });
         sendReportUpdate('generating');
         break;
+      }
+
+      // Credit protection: enforce the daily spend cap in the run loop.
+      // background/index.js check_credit_limit() has always been advisory and
+      // llm-client.js consults it before each LLM call, but the agent loop
+      // itself never did — so a run kept dispatching steps and burning credit
+      // after the budget was exhausted. Mirror the step-limit behaviour: stop
+      // the run with a clear message the operator can act on.
+      try {
+        const _credit = await chrome.runtime.sendMessage({ action: 'check_credit_limit' }).catch(() => null);
+        const _creditGate = _evaluateCreditLimit(_credit);
+        if (_creditGate.stop) {
+          sendSilentUpdate(`💳 ${_creditGate.summary}`, stepCount);
+          finished = true;
+          reportData = captureReportData(goal, history, agentMemory, agentPlan, stepCount, apiCallCount);
+          chrome.runtime.sendMessage({ action: 'agent_finished', summary: _creditGate.summary }).catch((e) => {
+            console.error('[_creditSummary] Unhandled rejection:', e);
+          });
+          sendReportUpdate('generating');
+          break;
+        }
+      } catch (_creditErr) {
+        // Non-fatal: never abort a run because the credit probe itself failed.
+        console.warn('[Sentinel] credit limit check failed:', getErrorMessage(_creditErr));
       }
 
       // Check for pending SPA transition -- if the page changed under us,
@@ -4415,6 +4512,9 @@ async function runAgentLoop(goal, workingTabId) {
       // the next prompt. Built on the failure-pattern signals already
       // accumulated in history + consecutiveFailures + _lastAiCallMs.
       let _skillAutoCommand = null;
+      // True only when this step's command came from the recovery-skill library
+      // rather than from the model. Consumed by the dispatch boundary.
+      let _engineInternalAction = false;
       try {
         const _lastHistEntry = _histLen ? history[_histLen - 1] : null;
         const _lastResult = _lastHistEntry && typeof _lastHistEntry.result === 'string' ? _lastHistEntry.result : '';
@@ -4473,6 +4573,10 @@ async function runAgentLoop(goal, workingTabId) {
           // Tag the command so the dispatch activity label shows the
           // recovery context.
           _skillAutoCommand = _recovery.autoApply;
+          // Engine-authored (composed by skills/ from the observed page state),
+          // never model output. The engine-internal marker is stamped at the
+          // branch that consumes this command — see the "reserved fields" block
+          // before the capability gate.
         } else if (_recovery.promptInjection) {
           // Append to loopDirective so the LLM sees the directive on the
           // next consult call.
@@ -4625,6 +4729,10 @@ async function runAgentLoop(goal, workingTabId) {
         base64Image = null;
         if (_visionMode) { try { await cdpExecuteJs(tab, VISION_CLEAR, { timeout: THREE_SECONDS_MS }); } catch (_e) { /* vision cleanup failed - non-fatal */ } }
         command = _skillAutoCommand;
+        // Stamped here, at the branch that actually consumes the skill command:
+        // if the sub-command queue above had anything queued it wins, and the
+        // queued command is model-authored, so it must stay unprivileged.
+        _engineInternalAction = true;
         activityDone(stepCount, 'consult-ai', 'Skipped (skill auto-applied)', null);
         _lastAiCallMs = 0;
       } else {
@@ -4999,6 +5107,22 @@ async function runAgentLoop(goal, workingTabId) {
       // so synthesize a note rather than crashing on null dereference.
       if (!command) {
         command = { type: 'note', text: 'No response from AI — check API key and provider settings.' };
+      }
+
+      // ── Reserved fields: strip model-supplied trust markers ──────────────
+      // Every branch that can produce `command` has now run, so this is the one
+      // point where model-authored, queue-drained and engine-authored actions
+      // converge before dispatch. Two fields below act as gates further down:
+      //   approvalGranted — opens the content-script approval guard and the
+      //                     capability gate's per-action operator approval;
+      //   _engineInternal — opens the capability gate's engine-internal path.
+      // background/action-schema.js rejects all of these names in LLM JSON, but
+      // the tool-calling parse path (provider.parseToolUseResponse) does not run
+      // the schema, so the boundary strips them again here. Only engine code
+      // writes them below this line.
+      stripModelTrustFields(command);
+      if (_engineInternalAction && typeof command === 'object') {
+        Reflect.set(command, '_engineInternal', true);
       }
 
       // Advance plan step if the LLM signalled it's done with the current step
@@ -5429,6 +5553,57 @@ async function runAgentLoop(goal, workingTabId) {
         break;
       }
 
+      // ═══════════════════════════════════════════════════════════════════
+      // THE CHOKE POINT — approval gate, then capability gate.
+      // Every action this loop dispatches passes through here, and nowhere
+      // else: it sits after the reserved-field strip (so a model-supplied
+      // approvalGranted/_engineInternal is already gone) and before the first
+      // action handler. It has to be this early because the handlers for
+      // run_remote_command, read_network_requests, lookup, verify and
+      // repeat_for_each all run below it — under the old layout they sat above
+      // the approval gate and so were never gated at all.
+      // Only `finish` is handled above this point; it dispatches nothing.
+      // ═══════════════════════════════════════════════════════════════════
+
+      // (3.41.0) Run-stable settings cache rather than a per-step storage read.
+      if (_runSettings.approvalMode && !NO_APPROVAL_ACTIONS.has(command.type)) {
+        const approval = await requestApproval(command, stepCount);
+        if (approval.rejected) {
+          historyPush({ step: stepCount, action: command, result: 'Rejected by user' });
+          command = { type: 'finish', summary: 'Stopped: action rejected by user.', _userRejected: true };
+          await persistHistory();
+          await sleep(ONE_SECOND_MS); continue;
+        }
+        if (approval.skipped) {
+          historyPush({ step: stepCount, action: command, result: 'Skipped by user' });
+          await persistHistory();
+          await sleep(ONE_SECOND_MS); continue;
+        }
+        // User explicitly approved — mark so content-script guards pass.
+        if (approval.approved) command.approvalGranted = true;
+      }
+
+      // Capability gate ("two-color rule"). The code-enforced boundary between
+      // what the model may do on its own (red) and what needs an operator grant
+      // (blue). Denial is fail-closed: the step is recorded and skipped, never
+      // executed. checkCapability() also recurses into batch sub-actions, which
+      // matters because a batch executes its first sub-action inline below.
+      const _capCheck = checkCapability(command, _runSettings.grantedCapabilities, {
+        currentTabId: tab,
+        // Same "current page" expression the loop uses elsewhere: the freshest
+        // observation wins, falling back to the loop's tabInfo.
+        currentUrl: (freshTabInfo && freshTabInfo.url) || (tabInfo && tabInfo.url) || '',
+      });
+      if (!_capCheck.allowed) {
+        const _capMsg = `BLOCKED (capability): ${_capCheck.reason}`;
+        activityFail(stepCount, 'dispatch', describeAction(command), { result: _capMsg });
+        sendActionResult(stepCount, _capMsg, true);
+        historyPush({ step: stepCount, action: command, result: _capMsg });
+        await persistHistory();
+        await sleep(EIGHT_HUNDRED_MS);
+        continue;
+      }
+
       // Handle note
       // repeat_for_each: iterate over a memory array and run sub-actions for each item.
       // Sub-commands are pushed to _pendingCommandQueue and drained before LLM consults.
@@ -5794,25 +5969,9 @@ async function runAgentLoop(goal, workingTabId) {
       } catch (_) { /* non-fatal */ }
       sendSilentUpdate(`Executing: ${command.type}${agentPlan ? ` [${currentPlanStep + 1}/${agentPlan.length}]` : ''}`, stepCount);
 
-      // Approval gate + CDP trusted input flag (#9)
-      // (3.41.0) Read from run-stable settings cache instead of per-step storage fetch.
+      // CDP trusted input flag (#9). The approval + capability gates run
+      // earlier, at the single choke point before the first action handler.
       const useTrustedInput = !!_runSettings.useTrustedInput;
-      if (_runSettings.approvalMode) {
-        const approval = await requestApproval(command, stepCount);
-        if (approval.rejected) {
-          historyPush({ step: stepCount, action: command, result: 'Rejected by user' });
-          command = { type: 'finish', summary: 'Stopped: action rejected by user.', _userRejected: true };
-          await persistHistory();
-          await sleep(ONE_SECOND_MS); continue;
-        }
-        if (approval.skipped) {
-          historyPush({ step: stepCount, action: command, result: 'Skipped by user' });
-          await persistHistory();
-          await sleep(ONE_SECOND_MS); continue;
-        }
-        // User explicitly approved — mark so content-script guards pass.
-        if (approval.approved) command.approvalGranted = true;
-      }
 
       // Capture pre-action screenshot for live preview
       const _beforeScreenshot = await captureStepScreenshot(tab);
@@ -5988,6 +6147,13 @@ async function runAgentLoop(goal, workingTabId) {
         const batchLen = batchActions.length;
         if (batchLen) {
           console.log(`[Sentinel/SPEED] Batch: queuing ${batchLen} actions`);
+          // Sub-actions drained on later iterations pass the choke point
+          // individually — the trust-field strip above removes any approvalGranted
+          // they might carry, so each one needs its own operator approval (or a
+          // standing grant) before it can run. Deliberate: one approval covering
+          // an unseen list of privileged sub-actions would be an escalation, and
+          // the batch's own capability check only proves the grants exist, not
+          // that the operator saw each action.
           // Push in reverse so shift() gets them in order
           for (let i = batchLen - 1; i >= 0; i--) {
             _pendingCommandQueue.unshift(batchActions[i]);
@@ -6362,7 +6528,7 @@ async function runAgentLoop(goal, workingTabId) {
         //   strategy: 'body_text_fallback'    -> selector missed, text saved
         //   strategy: 'visible_text_fallback' -> SPA-heavy page text saved
         //   strategy: 'all_failed'            -> surface error to LLM
-        const ladder = await _runExecuteJsWithRetryLadder(tab, command.code || '', command.timeout);
+        const ladder = await _runExecuteJsWithRetryLadder(tab, command.code || '', command.timeout, command.approvalGranted);
         if (ladder.strategy !== 'original') {
           console.log('[Sentinel] execute_js auto-recovered via:', ladder.strategy);
           // Append a hint to the result so the LLM knows which strategy
@@ -7860,6 +8026,8 @@ export {
   enforceRateLimit,
   sleep,
   requestApproval,
+  _initRunState,
+  _evaluateCreditLimit,
   _waitForAdaptedGoalDecision,
   _waitForModeMismatchDecision,
   _handleModeMismatchCheck,
