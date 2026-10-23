@@ -1,5 +1,51 @@
 # Changelog
 
+## v22.4.0 — 2026-10-23 (Shadow-DOM overlay fix + fail-safe command errors)
+
+Two defects found by the live-Chrome validation matrix, both of which made the
+extension lie to its caller.
+
+### Shadow-DOM targets were reported as blocked by their own host
+
+`overlay-detector.js` hit-tested with `doc.elementFromPoint()`, where `doc` is the
+main document, even when the target lives inside a shadow root. The DOM never
+crosses a shadow boundary, so that call can only ever return the shadow host.
+Every shadow-DOM interaction was therefore reported as "Element blocked by
+overlay that could not be dismissed", and no shadow-DOM click could succeed.
+
+The hit-test now runs against the target's own root — each root carries its own
+`elementFromPoint`, which sees through the boundary — walking outward so an
+overlay in an enclosing shadow root is still caught, and skipping any hit that
+resolves to the host owning the subtree, since from an outer root's point of view
+the whole subtree looks like that host. Closed roots resolve through the
+intercepted-root map.
+
+### A failed command was reported as a success
+
+`execute_command` classified failures with the regex
+`/^(Error)| not found|Element not found|No element/`. `executeCommand` has 148
+return sites that mix error strings with success strings, and that regex missed
+most of the error vocabulary — "Cannot click X", "Element blocked by overlay",
+"coordinates out of viewport" and "Unknown command type: X" all passed through as
+`{ ok: true }`.
+
+For an autonomous caller that is the worst possible failure mode: it proceeds
+believing an action landed. Classification is now by an allowlist of the success
+verb prefixes, in `SUCCESS_RESULT_PREFIXES`; an unlisted string is a failure.
+That fails safe — an unrecognised result throws and the caller sees
+`{ ok: false }` — and adding a success message now means adding its prefix
+deliberately.
+
+### Validation
+
+The live-Chrome matrix passes 10/10 scenarios with zero unhandled page exceptions
+and zero leaked Chrome processes, reproduced across two independent runs.
+Scenarios cover deterministic form filling and table scraping, same-origin iframe
+routing, modal and overlay dismissal, infinite scroll, hydration delay plus
+repeated DOM rerender, 404 and missing-element recovery, a challenge-response
+flow, viewport-relative coordinate and drag interactions, and an unauthenticated
+flow.
+
 ## v22.3.0 — 2026-10-23 (Credential Broker — keys leave the browser profile)
 
 Provider API keys no longer live in `chrome.storage.local`. This entry covers the

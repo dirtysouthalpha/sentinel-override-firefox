@@ -237,6 +237,18 @@ window.__sentinelUtils.overlay = window.__sentinelUtils.overlay || {};
    * @param {Element} targetEl - The target element to check for blocking.
    * @returns {Element|null} The blocking element if found, or null if not blocked.
    */
+  function getShadowRootOf(el) {
+    if (!el) return null;
+    if (el.shadowRoot) return el.shadowRoot;
+    if (window.__sentinelUtils && window.__sentinelUtils.shadow && window.__sentinelUtils.shadow.getShadowRoot) {
+      return window.__sentinelUtils.shadow.getShadowRoot(el);
+    }
+    if (window.__sentinelCapturedRoots && typeof window.__sentinelCapturedRoots.get === 'function') {
+      return window.__sentinelCapturedRoots.get(el) || null;
+    }
+    return null;
+  }
+
   ov.isOverlayBlocking = function(doc, targetEl) {
     if (!doc || !targetEl) return null;
 
@@ -252,7 +264,29 @@ window.__sentinelUtils.overlay = window.__sentinelUtils.overlay || {};
         return null;
       }
 
-      const topElement = doc.elementFromPoint(centerX, centerY);
+      // Hit-test in the target's OWN tree, not the main document. `doc` is the
+      // main document even when targetEl lives inside a shadow root, and
+      // document.elementFromPoint() stops at the shadow host -- it can never
+      // return an element inside the root, so testing the main document reports
+      // every shadow-DOM target as covered by its own host. Each root carries
+      // its own elementFromPoint, which sees through that boundary.
+      //
+      // Walk outward so an overlay living in an ENCLOSING shadow root is still
+      // caught, and skip any hit that resolves to the host owning this subtree
+      // (from an outer root's point of view the whole subtree looks like that host).
+      let node = targetEl.getRootNode();
+      let topElement = null;
+      while (node && !topElement) {
+        if (typeof node.elementFromPoint !== 'function') break;
+        const el = node.elementFromPoint(centerX, centerY);
+        if (el && el !== targetEl && !targetEl.contains(el)) {
+          const body = node.body || doc.body;
+          const docEl = node.documentElement || doc.documentElement;
+          const ownsTarget = getShadowRootOf(el) && getShadowRootOf(el).contains(targetEl);
+          if (el !== body && el !== docEl && !ownsTarget) topElement = el;
+        }
+        node = node.host ? node.host.getRootNode() : null;
+      }
       if (!topElement) return null;
 
       // If the topmost element IS the target (or a child of it), not blocked
@@ -261,11 +295,7 @@ window.__sentinelUtils.overlay = window.__sentinelUtils.overlay || {};
       }
 
       // Something is on top -- check if it looks like an overlay
-      if (topElement !== doc.body && topElement !== doc.documentElement) {
-        return topElement;
-      }
-
-      return null;
+      return topElement;
     } catch {
       return null;
     }

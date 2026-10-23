@@ -1,4 +1,3 @@
-(() => {
 // (SO-71) Idempotent-injection guard. chrome.scripting.executeScript(files)
 // RE-EXECUTES this whole bundle if called twice in the same isolated world
 // (agent-engine re-injects mid-run), and the second pass redeclares top-level
@@ -124,10 +123,20 @@ if (window.__sentinelInitialized) {
   // injected inline into the <script> tag so it runs in the page's MAIN world
   // alongside the user code — no cross-scope reference issues.
   // Defence-in-depth: approval gate + static regex guard still active.
+  // NOTE: the sandbox and the static guard are NOT security boundaries — they
+  // are best-effort hardening that a determined payload can defeat (obfuscation,
+  // indirect escapes). The approval gate is the real control; treat this layer
+  // as raising the cost of an attack, not as preventing one.
    
   const _EXECUTE_JS_SANDBOX_ENABLED = true;
   const _EXECUTE_JS_MAX_TIMEOUT_MS = 30000; // Maximum timeout for execute_js commands (30 seconds)
-  const _PRIV_RE = /\bdocument\.cookie\b|\bfetch\s*\(|\bXMLHttpRequest\b|\bWebSocket\b|\beval\s*\(|\bFunction\s*\(|\blocalStorage\b|\bsessionStorage\b|\bindexedDB\b|\bnavigator\.sendBeacon\b/;
+  // Static privileged-API guard. This is a best-effort, defence-in-depth layer
+  // ONLY -- it is NOT a security boundary. It matches the dangerous API names
+  // as bare words so that bracket access (`window["fetch"]`, `globalThis['eval']`)
+  // no longer evades it, but string-concatenation obfuscation (`'fe'+'tch'`)
+  // is not statically detectable at all. The real control is the approval gate
+  // plus the runtime Proxy sandbox; this regex just short-circuits the obvious.
+  const _PRIV_RE = /\bdocument\s*(?:\.\s*cookie\b|\[\s*['"]cookie['"]\s*\])|\b(?:fetch|XMLHttpRequest|WebSocket|EventSource|eval|Function|localStorage|sessionStorage|indexedDB|sendBeacon|importScripts|Worker|SharedWorker|ServiceWorker)\b/;
 
   // Helper function to check chrome.runtime.lastError
   function _hasLastError() {
@@ -620,8 +629,14 @@ if (window.__sentinelInitialized) {
       case 'execute_command': {
         const cmd = request.command;
         const result = await executeCommand(cmd);
-        // If executeCommand returns an error string, throw so the wrapper sends { ok: false, error }
-        if (typeof result === 'string' && (/^(Error)| not found|Element not found|No element/.test(result))) {
+        // executeCommand signals success and failure identically -- a string -- so
+        // they cannot be told apart by shape. Classify by an allowlist of the
+        // success verb prefixes; anything else it returns as a string is a
+        // failure. This fails safe: an unrecognised result throws, so the caller
+        // sees { ok: false } rather than being told an action succeeded when it
+        // did not. Adding a new success message means adding its prefix to
+        // SUCCESS_RESULT_PREFIXES, deliberately.
+        if (typeof result === 'string' && !isSuccessResult(result)) {
           throw new Error(result);
         }
         return { result };
@@ -1209,7 +1224,12 @@ if (window.__sentinelInitialized) {
     'postMessage',
     'navigator', 'location',
     'chrome',
-    'crypto'
+    'crypto',
+    // Global-scope escapes. Without these, `with`-scope interception is moot:
+    // these names all resolve to the REAL page
+    // window (the Proxy's `has` trap returns true and delegates), so e.g.
+    // `globalThis.fetch(...)` or `top.location = ...` would slip past the guard.
+    'globalThis', 'self', 'top', 'parent', 'frames', 'window'
   ]);
 
   // Document-level properties to block (beyond what EXECUTE_JS_BLOCKED_APIS covers for window)
@@ -1402,6 +1422,29 @@ if (window.__sentinelInitialized) {
   }
 
   // ========== Command Execution ==========
+  // Verb prefixes executeCommand uses to report SUCCESS, plus the JSON shapes
+  // that extract/extract_list return. Anything else it hands back as a string is
+  // a failure. Keep in sync with the success returns inside executeCommand.
+  const SUCCESS_RESULT_PREFIXES = [
+    'Clicked', 'Clicked at', 'Double-clicked', 'Double-clicked at',
+    'Dragged', 'Dropdown opened.', 'Multi-selected', 'Overlay dismissed',
+    'Pressed key:', 'Right-clicked', 'Scrolled', 'Selected', 'Set date to',
+    'Switched back to main document', 'Switched to iframe', 'Triple-clicked',
+    'Typed into', 'Uploaded file', 'JS Result:', 'File uploaded'
+  ];
+
+  function isSuccessResult(result) {
+    if (typeof result !== 'string') return true;
+    if (SUCCESS_RESULT_PREFIXES.some(p => result.startsWith(p))) return true;
+    // extract / extract_list hand back a JSON object literal.
+    const t = result.trim();
+    const c = t.charAt(0);
+    if (c === '{' || c === '[') {
+      try { JSON.parse(t); return true; } catch (e) { return false; }
+    }
+    return false;
+  }
+
   // Shared overlay-blocking guard. Returns null if clear, or an error string if
   // the element is blocked by an overlay that couldn't be dismissed.
   async function guardOverlayBlocking(targetDoc, el, cmd) {
@@ -2560,6 +2603,10 @@ if (window.__sentinelInitialized) {
                     'var __dp = new Proxy(document, {' +
                       'get(t,p) {' +
                         'if(__blkDoc.has(p)) throw new Error(`Sentinel Sandbox: blocked document.${String(p)}`);' +
+                        // document.defaultView must hand back the sandboxed window,
+                        // never the real one — otherwise `document.defaultView.fetch`
+                        // escapes the sandbox entirely.
+                        'if(p==="defaultView") return __wp;' +
                         'var v=t[p];' +
                         'return typeof v==="function"?v.bind(t):v;' +
                       '},' +
@@ -2965,4 +3012,3 @@ if (window.__sentinelInitialized) {
   }); } catch (e) { console.warn('[Sentinel] init ready signal:', getErrorMessage(e)); }
 }
 // (3.26.0) End-of-file marker — sync flush. (v3.36.3 dedupe applied)
-})();
