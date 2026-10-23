@@ -85,7 +85,9 @@ function switchProviderCard(providerId) {
   // Populate fields from saved provider config (per-provider keys in storage)
   const config = state.providerConfigs[providerId] || {};
   if (setProviderEndpoint) setProviderEndpoint.value = config.endpoint || '';
-  if (setProviderKey) setProviderKey.value = config.api_key || '';
+  // The key field shows a placeholder, never the secret. refreshKeyField paints
+  // it from the broker (and from any legacy local copy) without blocking.
+  refreshKeyField(providerId);
   if (setProviderModel) setProviderModel.value = config.model || '';
 
   // Auto-fill defaults if fields are empty — look up catalog entry
@@ -811,24 +813,118 @@ function refreshProviderSaveStatus() {
   setProviderSaveStatus(key === _lastSavedProviderKey ? 'saved' : 'unsaved');
 }
 
+// ========== Credential broker bridge ==========
+// Provider API keys live in the native credential broker, not in
+// chrome.storage.local. The popup therefore never holds a real secret: it shows
+// a fixed placeholder and asks the broker for the key only at the moment it is
+// needed (a Test Connection request, or a Save that changes it).
+const BROKER_KEY_PLACEHOLDER = '************************';
+const _brokerKeyPresence = new Map();
+let _brokerModulePromise = null;
+
+function loadBrokerModule() {
+  if (!_brokerModulePromise) {
+    _brokerModulePromise = import('../background/credential-broker.js').catch((e) => {
+      _brokerModulePromise = null;
+      throw e;
+    });
+  }
+  return _brokerModulePromise;
+}
+
+/** True when the broker currently holds a key for this provider. */
+async function brokerKeyPresent(providerId) {
+  return !!(await brokerKey(providerId));
+}
+
+/** The stored key for a provider, or '' when none is stored. Never logged. */
+async function brokerKey(providerId) {
+  try {
+    const mod = await loadBrokerModule();
+    const broker = mod.getCredentialBroker();
+    const key = await broker.get(providerId);
+    const present = !!key;
+    _brokerKeyPresence.set(providerId, present);
+    return present ? key : '';
+  } catch (e) {
+    return '';
+  }
+}
+
+function _localKeyFor(providerId) {
+  const configs = (getState() || {}).providerConfigs || {};
+  const cfg = configs[providerId] || {};
+  return cfg.api_key || cfg.apiKey || '';
+}
+
+function applyKeyField(providerId) {
+  if (!setProviderKey) return;
+  const hasKey = _brokerKeyPresence.get(providerId) === true || _localKeyFor(providerId) !== '';
+  setProviderKey.value = hasKey ? BROKER_KEY_PLACEHOLDER : '';
+}
+
+/** Re-read the broker and repaint the key field. Fire-and-forget. */
+function refreshKeyField(providerId) {
+  applyKeyField(providerId);
+  brokerKeyPresent(providerId).then((present) => {
+    if (!setProviderKey) return;
+    setProviderKey.value = (present || _localKeyFor(providerId) !== '') ? BROKER_KEY_PLACEHOLDER : '';
+  }).catch(() => { /* non-fatal: the field simply stays as it was */ });
+}
+
+/**
+ * Resolve the key to actually send. A blank field or the placeholder means
+ * "use what is already stored"; anything else is a new key the user typed.
+ */
+async function resolveKeyForRequest(providerId, submittedKey) {
+  const submitted = typeof submittedKey === 'string' ? submittedKey.trim() : '';
+  if (submitted !== '' && submitted !== BROKER_KEY_PLACEHOLDER) return submitted;
+  return brokerKey(providerId);
+}
+
 // Persist the current provider form values to chrome.storage.local under the
 // active provider, in the exact shape getActiveProvider() / boot-catcher read.
 // Shared by "Save Settings" and a successful "Test Connection" so that a config
 // the user just verified is never silently lost when they close the modal
 // without clicking Save — the root cause of "tested fine but says no API key".
 // Returns a Promise resolving to the activeProviderId on success, or null on failure.
-function persistProviderConfig(endpoint, apiKey, model) {
+async function persistProviderConfig(endpoint, apiKey, model) {
+  const state = getState();
+  const activeProviderId = state.activeProviderId || 'openai';
+  const submitted = typeof apiKey === 'string' ? apiKey.trim() : '';
+  // A blank field or the placeholder means "keep the key that is already
+  // stored". The popup never holds the real secret, so there is nothing to
+  // rewrite in that case.
+  const keepExisting = submitted === '' || submitted === BROKER_KEY_PLACEHOLDER;
+  const previousLocalKey = (state.providerConfigs[activeProviderId] || {}).api_key || '';
+
+  state.providerConfigs[activeProviderId] = {
+    // Never persist the secret to chrome.storage.local. The broker holds it.
+    api_key: '',
+    model: model,
+    endpoint: endpoint,
+    max_tokens: 8000,
+    temperature: 0.3
+  };
+
+  if (!keepExisting) {
+    // Broker first. If it is unavailable, fall back to the legacy local copy so
+    // a configuration the user just verified is never lost.
+    try {
+      const mod = await loadBrokerModule();
+      const broker = mod.getCredentialBroker();
+      await broker.put(activeProviderId, submitted);
+      _brokerKeyPresence.set(activeProviderId, true);
+    } catch (e) {
+      console.warn('[Sentinel/settings] credential broker unavailable — keeping the key in local storage');
+      state.providerConfigs[activeProviderId].api_key = submitted;
+    }
+  } else if (previousLocalKey) {
+    // No broker write happened, so a legacy local key must survive untouched.
+    state.providerConfigs[activeProviderId].api_key = previousLocalKey;
+  }
+
   return new Promise((resolve) => {
-    const state = getState();
-    const activeProviderId = state.activeProviderId || 'openai';
-    state.providerConfigs = state.providerConfigs || {};
-    state.providerConfigs[activeProviderId] = {
-      api_key: apiKey,
-      model: model,
-      endpoint: endpoint,
-      max_tokens: 8000,
-      temperature: 0.3
-    };
     chrome.storage.local.set({
       active_provider: activeProviderId,
       providers: state.providerConfigs
@@ -839,7 +935,7 @@ function persistProviderConfig(endpoint, apiKey, model) {
         return;
       }
       // Reflect the freshly persisted key in the inline status indicator.
-      _lastSavedProviderKey = apiKey;
+      _lastSavedProviderKey = keepExisting ? _lastSavedProviderKey : submitted;
       try { setProviderSaveStatus('saved'); } catch (_e) { /* non-fatal */ }
       resolve(activeProviderId);
     });
@@ -1121,6 +1217,14 @@ if (testConnectionBtn) testConnectionBtn.addEventListener('click', async () => {
     return;
   }
 
+  // The field may hold the the placeholder rather than a real key. Swap in the
+  // stored secret now, so the request below is authenticated with the real one.
+  const requestKey = await resolveKeyForRequest(getState().activeProviderId || 'openai', apiKey);
+  if (!requestKey) {
+    showToast('No API key available — re-enter it and save', 'error');
+    return;
+  }
+
   const prevText = testConnectionBtn.textContent;
   testConnectionBtn.textContent = 'Testing...';
   testConnectionBtn.disabled = true;
@@ -1129,8 +1233,8 @@ if (testConnectionBtn) testConnectionBtn.addEventListener('click', async () => {
     // Determine provider format from endpoint (popup context cannot import background modules)
     const isAnthropic = endpoint.includes('api.anthropic.com');
     const headers = isAnthropic
-      ? { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' }
-      : { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` };
+      ? { 'Content-Type': 'application/json', 'x-api-key': requestKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' }
+      : { 'Content-Type': 'application/json', 'Authorization': `Bearer ${requestKey}` };
     const body = JSON.stringify({ model, max_tokens: 16, messages: [{ role: 'user', content: 'ping' }] });
 
     const controller = new AbortController();

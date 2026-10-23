@@ -1,0 +1,9 @@
+{
+  "name": "com.sentinel.broker",
+  "description": "Sentinel credential broker (stores provider API keys outside the browser profile)",
+  "path": "__HOST_PATH__",
+  "type": "stdio",
+  "allowed_extensions": [
+    "__ADDON_ID__"
+  ]
+}

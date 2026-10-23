@@ -5,6 +5,7 @@
 import { getErrorMessage } from './error-utils.js';
 import { buildEnhancedSystemPrompt } from './system-prompt-rules.js';
 import { TWELVE_SECONDS_MS } from './constants.js';
+import { getCredentialBroker, guessProviderId, migrateLegacyCredentials, readProviderKey } from './credential-broker.js';
 
 /**
  * Extract error message from API error object.
@@ -768,24 +769,32 @@ export async function getActiveProvider() {
     return { id: 'openai', ...provider, endpoint: 'http://127.0.0.1:8083/v1/chat/completions', apiKey: '', model: 'internvl3-8b', maxTokens: 8000, temperature: 0.3 };
   }
 
+  // The broker is resolved lazily and cached for the life of this module
+  // instance, so a missing native host costs one probe, not one per LLM call.
+  const broker = getCredentialBroker();
+
   // If new provider structure exists, use it
   if (stored.active_provider && stored.providers && stored.providers[stored.active_provider]) {
-    const p = stored.providers[stored.active_provider];
+    const id = stored.active_provider;
+    const p = stored.providers[id];
+    const provider = PROVIDERS[id] || PROVIDERS.openai;
+    const endpoint = p.endpoint || provider.defaultEndpoint;
+    // The key lives in the credential broker, not in chrome.storage.local. The
+    // local copy is only a fallback for profiles that predate the broker.
+    const apiKey = await readProviderKey(broker, id, p.api_key || p.apiKey || '');
     // (SO-83) Unconfigured shell: default endpoint + no key = user never configured anything.
     // Resolve to the keyless local B60 lane instead of a keyless cloud endpoint (guaranteed 401/403).
-    const _defaultEndpoint = (PROVIDERS[stored.active_provider] || PROVIDERS.openai).defaultEndpoint;
-    const _hasCustomEndpoint = !!(p.endpoint && p.endpoint !== _defaultEndpoint);
-    const _hasKey = !!(p.api_key || p.apiKey);
-    if (!_hasKey && !_hasCustomEndpoint) {
+    // This must test the *resolved* key: p.api_key is blank once the broker holds it.
+    const _hasCustomEndpoint = !!(p.endpoint && p.endpoint !== provider.defaultEndpoint);
+    if (!apiKey && !_hasCustomEndpoint) {
       console.info('[Sentinel/provider-registry] Active provider unconfigured (SO-83): using keyless local B60 default');
       return { id: 'openai', ...PROVIDERS.openai, endpoint: 'http://127.0.0.1:8083/v1/chat/completions', apiKey: '', model: 'internvl3-8b', maxTokens: 8000, temperature: 0.3 };
     }
-    const provider = PROVIDERS[stored.active_provider] || PROVIDERS.openai;
     return {
-      id: stored.active_provider,
+      id,
       ...provider,
-      endpoint: p.endpoint || provider.defaultEndpoint,
-      apiKey: p.api_key || '',
+      endpoint,
+      apiKey,
       model: p.model || provider.defaultModel,
       maxTokens: p.max_tokens || 8000,
       temperature: p.temperature || 0.3,
@@ -796,7 +805,7 @@ export async function getActiveProvider() {
 
   // Fallback to legacy single-provider keys
   const endpoint = stored.api_endpoint || '';
-  const apiKey = stored.api_key || '';
+  const apiKey = await readProviderKey(broker, guessProviderId(stored.api_endpoint), stored.api_key || '');
   const model = stored.model || '';
   // (SO-76b) Truly empty config: default to the keyless local B60 lane, never a cloud endpoint.
   if (!endpoint && !apiKey && !model) {
@@ -831,6 +840,19 @@ export async function migrateLegacySettings() {
     console.warn('[Sentinel/provider-registry] Storage read failed:', getErrorMessage(e));
     return;
   }
+
+  // Move any provider key still sitting in chrome.storage.local into the
+  // credential broker, then blank it. This runs BEFORE the early returns below:
+  // the key must be moved even when the per-provider structure already exists,
+  // and on a fresh install there is simply nothing to move.
+  try {
+    await migrateLegacyCredentials(getCredentialBroker(), globalThis.chrome, (msg) => console.info(msg));
+  } catch (e) {
+    // A failed migration leaves the key in local storage. That is a failed
+    // migration, never a lost key.
+    console.warn('[Sentinel/provider-registry] credential migration failed:', getErrorMessage(e));
+  }
+
   if (stored.providers) return; // already migrated
   // SO-86: fresh install (no legacy config) — leave storage empty so the
   // keyless local default (SO-76b) applies. Seeding an active cloud provider
