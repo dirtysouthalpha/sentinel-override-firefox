@@ -22,9 +22,13 @@ export const AUTO_RESUME_WINDOW_MS = 10 * 60 * 1000;   // mirrors the SW-wake se
  * @param {number} s.now             current epoch ms
  * @param {number} [s.stallLimitMs]
  * @param {number} [s.resumeWindowMs]
+ * @param {boolean} [s.killEngaged]  (0.5) run-guard kill switch is engaged.
+ *   When set, an orphaned run must be CLEARED, never resumed: resuming is
+ *   exactly what resurrected a run the operator had explicitly stopped, because
+ *   agentRunning is in-memory and a SW restart forgets the stop.
  * @returns {{action: 'ok'|'idle'|'stop_stalled'|'resume'|'clear_stale_flags', stalledMs?: number, ageMs?: number, reason?: string}}
  */
-export function evaluateTick({ memoryRunning, paused = false, session = null, checkpoint = null, now, stallLimitMs = DEFAULT_STALL_LIMIT_MS, resumeWindowMs = AUTO_RESUME_WINDOW_MS }) {
+export function evaluateTick({ memoryRunning, paused = false, session = null, checkpoint = null, now, stallLimitMs = DEFAULT_STALL_LIMIT_MS, resumeWindowMs = AUTO_RESUME_WINDOW_MS, killEngaged = false }) {
   const sessRunning = !!(session && session.agentRunning);
   // Freshest available progress signal: per-step checkpoint writes carry
   // lastUpdate; before the first checkpoint, the run start time anchors us.
@@ -42,6 +46,10 @@ export function evaluateTick({ memoryRunning, paused = false, session = null, ch
   // In-memory flag is down — does session storage still claim an active run?
   // (SW restart lost the flag, or the wake self-heal never ran / failed.)
   if (sessRunning && session.agentGoal) {
+    // (0.5) Kill switch wins over auto-resume. Clearing the stale flags is the
+    // correct outcome: it tells the popup no run is live and leaves nothing for
+    // a later tick to pick up.
+    if (killEngaged) return { action: 'clear_stale_flags', ageMs: now - ((session && session.agentStartTime) || 0), reason: 'kill switch engaged — refusing to resume an orphaned run' };
     const ageMs = now - ((session && session.agentStartTime) || 0);
     if (ageMs < resumeWindowMs && checkpoint && checkpoint.lastGoal) {
       return { action: 'resume', ageMs };
@@ -54,22 +62,27 @@ export function evaluateTick({ memoryRunning, paused = false, session = null, ch
 /**
  * Gather state, decide, act. All IO is injected so tests run without chrome.
  * @param {object} d deps: isRunning, isPaused, getSessionState, getCheckpoint, now,
- *   stopAgent, startAgent, restoreFromCheckpoint, clearCheckpoint, clearSessionFlags, log
+ *   stopAgent, startAgent, restoreFromCheckpoint, clearCheckpoint, clearSessionFlags,
+ *   isKillEngaged, log
  * @returns {Promise<object>} the verdict (+ what was done)
  */
 export async function runWatchdogTick(d) {
   const {
     isRunning, isPaused, getSessionState, getCheckpoint, now,
     stopAgent, startAgent, restoreFromCheckpoint, clearCheckpoint, clearSessionFlags,
+    isKillEngaged,
     log = () => {}
   } = d;
-  const [memoryRunning, paused, session, checkpoint] = await Promise.all([
+  const [memoryRunning, paused, session, checkpoint, killEngaged] = await Promise.all([
     Promise.resolve(isRunning()).catch(() => false),
     Promise.resolve(isPaused ? isPaused() : false).catch(() => false),
     Promise.resolve(getSessionState()).catch(() => null),
-    Promise.resolve(getCheckpoint()).catch(() => null)
+    Promise.resolve(getCheckpoint()).catch(() => null),
+    // Absent dep => not engaged. The guard read itself is best-effort: if it
+    // throws we fall back to the pre-0.5 behaviour rather than skipping a tick.
+    Promise.resolve(isKillEngaged ? isKillEngaged() : false).catch(() => false)
   ]);
-  const verdict = evaluateTick({ memoryRunning, paused, session, checkpoint, now: now() });
+  const verdict = evaluateTick({ memoryRunning, paused, session, checkpoint, now: now(), killEngaged });
 
   if (verdict.action === 'stop_stalled') {
     log('warn', '[Sentinel/watchdog] Run stalled — stopping it', verdict);

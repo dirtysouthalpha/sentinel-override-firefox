@@ -12,6 +12,14 @@ import { resolveSystemPrompt } from './remote-config.js';
 // (O4/A1) Cross-run endpoint cooldown breaker — keeps the endpoint resting
 // between runs; the SO-94 fail-streak below aborts the run itself.
 import { endpointBreaker } from './endpoint-breaker.js';
+// (0.5) Persisted run guard — enforced kill switch, spend budget and rate
+// limit. Replaces the advisory check_credit_limit probe that used to live in
+// callLLM: that probe failed open, so a failed check meant "spend anyway".
+import { guardStore, GUARD_BLOCK } from './run-guard.js';
+// (0.4) Typed action schema. Shape-only validation so the model gets a
+// self-correctable error instead of silently-dropped fields. Authorisation is
+// NOT here — see background/capabilities.js.
+import { validateAction } from './action-schema.js';
 
 // v20.1: system prompt = provider tweak merged with any remote-config patch
 // (Claude-in-Chrome-style server-config prompts, over SO's storage).
@@ -24,7 +32,6 @@ async function _effectiveSystemPrompt(provider) {
   }
 }
 import { API_TIMEOUT_MS, PLATFORM_CTX_CACHE_TTL_MS, ONE_SECOND_MS, TWO_SECONDS_MS, VISION_FETCH_TIMEOUT_MS } from './constants.js';
-import { validateAction } from './action-schema.js';
 
 // Constants for response parsing - avoid recreating on every call
 const VALID_ACTION_TYPES = new Set(['click', 'type', 'navigate', 'scroll', 'select', 'hover', 'press_key',
@@ -2099,16 +2106,23 @@ async function callLLM(trimmedElements, totalElementCount, pageContent, base64Im
   if (!CONFIG) throw new Error('CONFIG is required');
   const _apiStart = Date.now();
   _rateLimiter.check();
-  // Credit protection: check daily limit before making API call
-  try {
-    if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
-      const limitCheck = await chrome.runtime.sendMessage({ action: 'check_credit_limit' }).catch(() => null);
-      if (limitCheck && !limitCheck.allowed) {
-        console.warn('[Sentinel/LLM] Daily credit limit exceeded');
-        return { type: 'finish', summary: 'Daily credit limit reached. Increase limit in Settings or wait until tomorrow.' };
-      }
+  // (0.5) Enforced run guard. This replaces the old check_credit_limit probe,
+  // which failed open (its catch returned allowed:true and both call sites
+  // swallowed errors), so a failed probe meant "spend anyway". A block here
+  // is a hard stop, not a warning.
+  const _guard = await guardStore.check();
+  if (_guard.blocked) {
+    console.warn(`[Sentinel/LLM] Run guard blocked the call: ${_guard.code} — ${_guard.reason}`);
+    if (_guard.code === GUARD_BLOCK.RATE_LIMIT) {
+      // Surface the retry window so the run loop can back off instead of
+      // burning the step cap on an endpoint that is deliberately resting.
+      throw new Error(`RUN_GUARD_RATE_LIMITED: ${_guard.reason}`);
     }
-  } catch (_e) { /* non-fatal — allow call if check fails */ }
+    return {
+      type: 'finish',
+      summary: _guard.reason || 'Run guard blocked this call. Check Settings to resume.'
+    };
+  }
   agentState.apiCallCount++; // increment before any throws so the count is always recorded
   const providerConfig = await getActiveProvider();
   const { endpoint, apiKey } = providerConfig;
@@ -2427,13 +2441,14 @@ You are executing a structured, multi-phase IT investigation. Rules for this mod
     agentState.estimatedCostUsd = estimateCostUsd(agentState.totalInputTokens, agentState.totalOutputTokens, model);
     // Multi-provider cost tracking by tier
     recordModelUsage(agentState._lastModelTier || 'default', _in, _out);
-    // Credit protection: record usage for daily limit tracking
-    try {
-      const _msg = { action: 'record_credit_usage', inputTokens: _in, outputTokens: _out, model };
-      if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
-        chrome.runtime.sendMessage(_msg).catch(() => {});
-      }
-    } catch (_e) { /* non-fatal */ }
+    // (0.5) Charge the run guard ledger. This is the single source of truth
+    // for spend — index.js record_credit_usage/check_credit_limit delegate to
+    // the same ledger, so there is no second counter that can drift.
+    guardStore.charge({
+      costUsd: estimateCostUsd(_in, _out, model),
+      calls: 1,
+      tokens: _in + _out
+    }).catch((_e) => console.warn('[Sentinel/LLM] guard charge failed:', getErrorMessage(_e)));
   }
   if (_u.cache_read_input_tokens)    agentState.totalCacheReadTokens  = (agentState.totalCacheReadTokens  || 0) + _u.cache_read_input_tokens;
   if (_u.cache_creation_input_tokens) agentState.totalCacheWriteTokens = (agentState.totalCacheWriteTokens || 0) + _u.cache_creation_input_tokens;
@@ -2600,7 +2615,7 @@ export function extractFirstJsonObject(str) {
       const candidate = str.substring(start, end + 1);
       try {
         const parsed = JSON.parse(candidate);
-        // A candidate is only an "action" if it is both a known type and
+        // (0.4) A candidate is only an "action" if it is both a known type and
         // schema-valid (no unknown/reserved fields, no wrong value types). An
         // invalid object is skipped rather than returned, so the caller falls
         // through to parseLLMResponse's rejecting path instead of executing a
@@ -2742,15 +2757,9 @@ export function parseLLMResponse(content) {
     if (!parsed.type && parsed.next_action && typeof parsed.next_action === 'object') parsed = parsed.next_action;
     if (!parsed.type) throw new Error('Missing type field');
     if (!VALID_ACTION_TYPES.has(parsed.type)) throw new Error(`Invalid command type: ${parsed.type}`);
-    // Reject unknown fields, reserved engine-trust fields, and wrong value
+    // (0.4) Reject unknown fields, reserved engine-trust fields, and wrong value
     // types with a message the model can act on. Thrown (not silently dropped)
     // so the caller surfaces it as a retryable parse error.
-    //
-    // This is the parse-path half of the trust boundary. The dispatch boundary
-    // in agent-engine.js strips only the four names it knows about
-    // (approvalGranted, autoApproved, approved, _engineInternal); without this
-    // check a model could set `_visionIndex` or any other `_`-prefixed field
-    // and have the engine read it as vision provenance the model never earned.
     const _schemaResult = validateAction(parsed);
     if (!_schemaResult.valid) throw new Error(`Invalid ${parsed.type} action: ${_schemaResult.error}`);
     if (__reasoning) parsed.__reasoning = __reasoning;
@@ -2765,8 +2774,8 @@ export function parseLLMResponse(content) {
       try {
         const sanitized = sanitizeLlmJson(content.trim());
         const parsed = JSON.parse(sanitized);
-        // Same schema gate as the primary path — the salvage route must not
-        // become a way to slip an unknown field or reserved marker through.
+        // (0.4) Same schema gate as the primary path — the salvage route must
+        // not become a way to slip an unknown field or reserved marker through.
         if (parsed && parsed.type && VALID_ACTION_TYPES.has(parsed.type) && validateAction(parsed).valid) return parsed;
       } catch (e) { console.warn('[Sentinel/llm] Regex salvage failed:', getErrorMessage(e)); }
       try {
@@ -2826,6 +2835,14 @@ export async function getRelevantPatterns(goal) {
  */
 export async function callLLMSimple(systemPrompt, userPrompt, maxTokens = 1200) {
   if (!systemPrompt || !userPrompt) throw new Error('systemPrompt and userPrompt are required');
+  // (0.5) This is a second spend path — Quick Assist and the nested semantic
+  // find both land here — and it previously had no guard, no rate limit and
+  // no breaker, so it could spend outside the budget entirely.
+  const _guard = await guardStore.check();
+  if (_guard.blocked) {
+    console.warn(`[Sentinel/LLM] Run guard blocked callLLMSimple: ${_guard.code} — ${_guard.reason}`);
+    throw new Error(_guard.reason || 'Run guard blocked this call. Check Settings to resume.');
+  }
   const providerConfig = await getActiveProvider();
   if (!providerConfig) throw new Error('No active provider configured. Set one in extension settings.');
   const { endpoint, apiKey, model } = providerConfig;
@@ -2850,6 +2867,18 @@ export async function callLLMSimple(systemPrompt, userPrompt, maxTokens = 1200) 
     if (!data) throw new Error('Quick Assist API returned null response body');
     const text = provider.parseResponse(data);
     if (!text) throw new Error('Empty response from API');
+    // (0.5) Charge the ledger. callLLMSimple does not surface token usage, so
+    // estimate from character counts (~4 chars/token) — the same order of
+    // magnitude the pricing table needs, and conservative enough to bound spend.
+    guardStore.charge({
+      costUsd: estimateCostUsd(
+        Math.ceil((systemPrompt.length + userPrompt.length) / 4),
+        Math.ceil(text.length / 4),
+        model
+      ),
+      calls: 1,
+      tokens: Math.ceil((systemPrompt.length + userPrompt.length + text.length) / 4)
+    }).catch((_e) => console.warn('[Sentinel/LLM] guard charge failed:', getErrorMessage(_e)));
     return text;
   } catch (err) {
     clearTimeout(timeout);

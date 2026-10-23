@@ -1686,50 +1686,55 @@ if (testConnectionBtn) testConnectionBtn.addEventListener('click', async () => {
 
 })();
 
+// ========== Run Guard status (Phase 0.5) ==========
+// The guard owns the spend ledger now, so every reader goes through
+// guard_status instead of the old credit_usage key. That key is gone: two
+// ledgers is exactly how the old advisory probe drifted from reality.
+// wrapMessageHandler envelopes every reply as { ok, data }, so unwrap here and
+// hand callers the payload directly. Callback-shaped because this file also
+// runs in a bare vm context in tests.
+function _unwrapEnvelope(res) {
+  if (!res) return null;
+  if (Object.prototype.hasOwnProperty.call(res, 'data')) return res.data;
+  return res;
+}
+
+function _guardStatus(callback) {
+  try {
+    chrome.runtime.sendMessage({ action: 'guard_status' }, (res) => {
+      callback(_unwrapEnvelope(res));
+    });
+  } catch (_e) {
+    callback(null);
+  }
+}
+
 // ========== OpenRouter Credit Protection ==========
 (function wireCreditProtection() {
   const badge = document.getElementById('quickModelCreditBadge');
   if (!badge) return;
 
-  const DAILY_LIMIT = 5.00; // $5/day limit (configurable)
-
   function _loadCreditData(callback) {
-    chrome.storage.local.get(['credit_usage', 'credit_limit'], (result) => {
-      if (chrome.runtime.lastError) { callback(null); return; }
-      const today = new Date().toISOString().split('T')[0];
-      const usage = result.credit_usage || {};
-      const todayUsage = usage[today] || { tokens: 0, cost: 0, calls: 0 };
-      const limit = result.credit_limit || DAILY_LIMIT;
-      callback({ todayUsage, limit, today });
+    _guardStatus((res) => {
+      if (!res || !res.ok || !res.status) { callback(null); return; }
+      const s = res.status;
+      callback({
+        todayUsage: { tokens: s.spentTokens, cost: s.spentCostUsd, calls: s.spentCalls },
+        limit: s.limits.dailyCostUsd,
+        today: s.today
+      });
     });
   }
 
   // Expose for background to call after each LLM response
   window._recordCreditUsage = function(inputTokens, outputTokens, model) {
-    chrome.storage.local.get(['credit_usage'], (result) => {
-      if (chrome.runtime.lastError) return;
-      const today = new Date().toISOString().split('T')[0];
-      const usage = result.credit_usage || {};
-      if (!usage[today]) usage[today] = { tokens: 0, cost: 0, calls: 0 };
-
-      // Free models = $0 cost, but track tokens for rate limiting
-      const isFree = (model || '').includes(':free');
-      const costPerToken = isFree ? 0 : 0.000003; // rough estimate for paid
-      const addedCost = ((inputTokens || 0) + (outputTokens || 0)) * costPerToken;
-
-      usage[today].tokens += (inputTokens || 0) + (outputTokens || 0);
-      usage[today].cost += addedCost;
-      usage[today].calls++;
-
-      // Keep only last 7 days
-      const cutoff = new Date(Date.now() - 7 * 86400000).toISOString().split('T')[0];
-      for (const key of Object.keys(usage)) {
-        if (key < cutoff) delete usage[key];
-      }
-
-      chrome.storage.local.set({ credit_usage: usage });
-      _refreshBadge();
-    });
+    chrome.runtime.sendMessage({
+      action: 'record_credit_usage',
+      inputTokens: inputTokens || 0,
+      outputTokens: outputTokens || 0,
+      model: model || ''
+    }, () => {});
+    _refreshBadge();
   };
 
   function _refreshBadge() {
@@ -1758,16 +1763,100 @@ if (testConnectionBtn) testConnectionBtn.addEventListener('click', async () => {
 
   // Expose for background to check before calls
   window._checkCreditLimit = function(callback) {
-    _loadCreditData((data) => {
-      if (!data) { callback(true); return; } // allow if unknown
-      const { todayUsage, limit } = data;
-      const allowed = todayUsage.cost < limit;
+    _guardStatus((res) => {
+      if (!res || !res.ok) { callback(true); return; } // allow if unknown
+      const allowed = !res.verdict || !res.verdict.blocked;
       if (!allowed) {
-        try { showToast('Daily credit limit reached! Increase in Settings or wait until tomorrow.', 'error'); } catch (_e) { /* non-fatal */ }
+        try { showToast(res.verdict.reason || 'Run guard blocked this call.', 'error'); } catch (_e) { /* non-fatal */ }
       }
       callback(allowed);
     });
   };
+})();
+
+// ========== Run Guard UI (kill switch + limits) ==========
+(function wireGuardUI() {
+  const statusEl = document.getElementById('guardStatusDisplay');
+  const killBtn = document.getElementById('guardKillSwitchBtn');
+  const resetBtn = document.getElementById('guardResetBtn');
+  const callsInput = document.getElementById('guardDailyCallsInput');
+  const maxCallsInput = document.getElementById('guardMaxCallsInput');
+  if (!statusEl || !killBtn) return;
+
+  function _render(res) {
+    if (!res || !res.ok || !res.status) {
+      statusEl.textContent = 'Guard unavailable';
+      statusEl.className = 'sx-0043';
+      return;
+    }
+    const s = res.status;
+    const engaged = !!(s.kill && s.kill.disabled);
+    statusEl.textContent = engaged
+      ? `🛑 STOP ENGAGED${s.kill.by ? ` by ${s.kill.by}` : ''} — Sentinel will not run.`
+      : `Armed · $${s.spentCostUsd.toFixed(2)} / $${s.limits.dailyCostUsd.toFixed(2)} today · ${s.spentCalls} calls`;
+    statusEl.className = engaged ? 'sx-0043 guard-engaged' : 'sx-0043';
+    killBtn.textContent = engaged ? '▶️ Clear kill switch' : '🛑 Engage kill switch';
+    if (callsInput && document.activeElement !== callsInput) callsInput.value = s.limits.dailyCalls;
+    if (maxCallsInput && document.activeElement !== maxCallsInput) maxCallsInput.value = s.limits.maxCalls;
+  }
+
+  function _refresh() {
+    _guardStatus(_render);
+  }
+
+  killBtn.addEventListener('click', () => {
+    _guardStatus((res) => {
+      const engaged = !!(res && res.ok && res.status && res.status.kill && res.status.kill.disabled);
+      const action = engaged ? 'guard_clear_kill_switch' : 'guard_engage_kill_switch';
+      const payload = engaged ? { action, by: 'popup' } : {
+        action,
+        by: 'popup',
+        reason: (window.prompt && window.prompt('Why are you stopping Sentinel? (shown in the log)', 'Stopped by operator')) || 'Stopped by operator'
+      };
+      chrome.runtime.sendMessage(payload, (r) => {
+        const body = _unwrapEnvelope(r);
+        if (body && body.ok) {
+          const engagedNow = !!(body.status && body.status.kill && body.status.kill.disabled);
+          try { showToast(engagedNow ? 'Kill switch engaged' : 'Kill switch cleared', 'success'); } catch (_e) {}
+        } else {
+          try { showToast('Guard command failed', 'error'); } catch (_e) {}
+        }
+        _refresh();
+      });
+    });
+  });
+
+  resetBtn.addEventListener('click', () => {
+    if (!window.confirm('Reset the run guard? This clears the kill switch and today\'s spend ledger.')) return;
+    chrome.runtime.sendMessage({ action: 'guard_reset' }, (r) => {
+      const body = _unwrapEnvelope(r);
+      const ok = !!(body && body.ok);
+      try { showToast(ok ? 'Guard reset' : 'Guard reset failed', ok ? 'success' : 'error'); } catch (_e) {}
+      _refresh();
+    });
+  });
+
+  // Save the two limit inputs together on change.
+  function _saveLimits() {
+    const patch = { action: 'guard_set_limits' };
+    const calls = parseInt(callsInput && callsInput.value, 10);
+    const maxCalls = parseInt(maxCallsInput && maxCallsInput.value, 10);
+    if (Number.isFinite(calls) && calls >= 0) patch.dailyCalls = calls;
+    if (Number.isFinite(maxCalls) && maxCalls >= 1) patch.maxCalls = maxCalls;
+    if (!patch.dailyCalls && !patch.maxCalls) {
+      try { showToast('Enter a valid limit', 'error'); } catch (_e) {}
+      return;
+    }
+    chrome.runtime.sendMessage(patch, (r) => {
+      const body = _unwrapEnvelope(r);
+      try { showToast(body && body.ok ? 'Guard limits updated' : 'Guard limits failed', body && body.ok ? 'success' : 'error'); } catch (_e) {}
+      _refresh();
+    });
+  }
+  if (callsInput) callsInput.addEventListener('change', _saveLimits);
+  if (maxCallsInput) maxCallsInput.addEventListener('change', _saveLimits);
+
+  _refresh();
 })();
 
 // ========== Credit Limit Settings UI ==========
@@ -1776,16 +1865,15 @@ if (testConnectionBtn) testConnectionBtn.addEventListener('click', async () => {
   const usageDisplay = document.getElementById('creditUsageDisplay');
   if (!limitInput || !usageDisplay) return;
 
-  // Load saved limit
-  chrome.storage.local.get(['credit_limit', 'credit_usage'], (result) => {
-    if (chrome.runtime.lastError) return;
-    const limit = result.credit_limit || 5.00;
-    limitInput.value = limit;
-
-    const today = new Date().toISOString().split('T')[0];
-    const usage = result.credit_usage || {};
-    const todayUsage = usage[today] || { tokens: 0, cost: 0, calls: 0 };
-    usageDisplay.textContent = `$${todayUsage.cost.toFixed(2)} / $${limit.toFixed(2)} (${todayUsage.calls} calls, ${todayUsage.tokens.toLocaleString()} tokens)`;
+  // Load saved limit + today's usage from the guard
+  _guardStatus((res) => {
+    if (!res || !res.ok || !res.status) return;
+    const s = res.status;
+    limitInput.value = s.limits.dailyCostUsd;
+    usageDisplay.textContent = `$${s.spentCostUsd.toFixed(2)} / $${s.limits.dailyCostUsd.toFixed(2)} (${s.spentCalls} calls, ${s.spentTokens.toLocaleString()} tokens)`;
+    if (s.kill && s.kill.disabled) {
+      usageDisplay.textContent += ' — 🛑 kill switch engaged';
+    }
   });
 
   // Save limit on change
@@ -1795,8 +1883,9 @@ if (testConnectionBtn) testConnectionBtn.addEventListener('click', async () => {
       try { showToast('Enter a valid limit', 'error'); } catch (_e) { /* non-fatal */ }
       return;
     }
-    chrome.storage.local.set({ credit_limit: val }, () => {
-      if (!chrome.runtime.lastError) {
+    chrome.runtime.sendMessage({ action: 'guard_set_limits', dailyCostUsd: val }, (r) => {
+      const body = _unwrapEnvelope(r);
+      if (body && body.ok) {
         try { showToast(`Daily limit set to $${val.toFixed(2)}`, 'success'); } catch (_e) { /* non-fatal */ }
       }
     });

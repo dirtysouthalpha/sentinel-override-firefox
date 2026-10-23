@@ -8,6 +8,10 @@ import { setSPATransitionPending, notifyIfEnabled, stopSwKeepalive } from './sha
 import { enumerateFrames, executeInFrame, resolveFrameForSelector, addFrameRouterListeners } from './frame-router.js';
 import { getActiveTabId, handleTabRemoved } from './tab-context.js';
 import { callLLMSimple } from './llm-client.js';
+// (0.5) Run guard — single persisted source of truth for the kill switch,
+// spend budget and rate limit. The credit handlers below delegate to it, so
+// there is one ledger instead of two that can drift apart.
+import { guardStore, guardStatus, GUARD_BLOCK, DEFAULT_LIMITS } from './run-guard.js';
 import { listTemplates, getTemplate, saveTemplate, updateTemplate, deleteTemplate, resolveTemplateGoal } from './template-manager.js';
 import { PROVIDER_CATALOG, getCatalogProvider, fetchModelsList } from './provider-registry.js';
 import { createSchedule, listSchedules, deleteSchedule, toggleSchedule, executeScheduledTask, getScheduleResults, getRecentResults, clearScheduleResults, initScheduler } from './scheduler.js';
@@ -265,6 +269,15 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
         isPaused: () => isAgentPaused(),
         getSessionState: async () => { try { return await chrome.storage.session.get(['agentRunning', 'agentGoal', 'agentStartTime']); } catch (_e) { return null; } },
         getCheckpoint: async () => { try { const s2 = await chrome.storage.session.get('agent_checkpoint'); return (s2 && s2.agent_checkpoint) || null; } catch (_e) { return null; } },
+        // (0.5) The kill switch outranks auto-resume: without this the watchdog
+        // resurrected a run the operator had explicitly stopped on every SW
+        // restart, because agentRunning is in-memory and a restart forgets.
+        isKillEngaged: async () => {
+          try {
+            const v = await guardStore.check();
+            return !!(v && v.blocked && v.code === GUARD_BLOCK.KILL_SWITCH);
+          } catch (_e) { return false; }
+        },
         now: () => Date.now(),
         stopAgent,
         startAgent,
@@ -469,49 +482,103 @@ chrome.runtime.onMessage.addListener(wrapMessageHandler(async (request, sender) 
       }
     }
     case 'record_credit_usage': {
-      // Credit protection: record token usage for daily limit tracking
+      // (0.5) Delegate to the run guard. This used to maintain its own
+      // credit_usage ledger in chrome.storage.local — a second counter that
+      // could drift from the guard's, and one that nothing enforced.
       try {
-        const today = new Date().toISOString().split('T')[0];
-        const inputTokens = request.inputTokens || 0;
-        const outputTokens = request.outputTokens || 0;
-        const model = request.model || '';
-
-        const stored = await chrome.storage.local.get(['credit_usage', 'credit_limit']);
-        const usage = stored.credit_usage || {};
-        if (!usage[today]) usage[today] = { tokens: 0, cost: 0, calls: 0 };
-
-        // Free models = $0 cost, but track tokens for rate limiting
-        const isFree = (model || '').includes(':free');
-        const costPerToken = isFree ? 0 : 0.000003;
-        const addedCost = (inputTokens + outputTokens) * costPerToken;
-
-        usage[today].tokens += inputTokens + outputTokens;
-        usage[today].cost += addedCost;
-        usage[today].calls++;
-
-        // Keep only last 7 days
-        const cutoff = new Date(Date.now() - 7 * 86400000).toISOString().split('T')[0];
-        for (const key of Object.keys(usage)) {
-          if (key < cutoff) delete usage[key];
-        }
-
-        await chrome.storage.local.set({ credit_usage: usage });
+        const costUsd = (Number(request.inputTokens) || 0) + (Number(request.outputTokens) || 0);
+        const isFree = String(request.model || '').includes(':free');
+        const r = await guardStore.charge({
+          costUsd: isFree ? 0 : costUsd * 0.000003,
+          calls: 1,
+          tokens: costUsd
+        });
+        if (!r.ok) return { ok: false, error: r.error };
         return { ok: true };
       } catch (e) {
         return { ok: false, error: getErrorMessage(e) };
       }
     }
     case 'check_credit_limit': {
-      // Credit protection: check if daily limit exceeded
+      // (0.5) Read the guard's verdict. Keeps the {allowed, usage, limit}
+      // shape the popup already consumes; `allowed` is now a real gate rather
+      // than the old fail-open advisory probe.
       try {
-        const today = new Date().toISOString().split('T')[0];
-        const stored = await chrome.storage.local.get(['credit_usage', 'credit_limit']);
-        const usage = stored.credit_usage || {};
-        const todayUsage = usage[today] || { tokens: 0, cost: 0, calls: 0 };
-        const limit = stored.credit_limit || 5.00;
-        return { allowed: todayUsage.cost < limit, usage: todayUsage, limit };
+        const verdict = await guardStore.check();
+        const status = verdict.status || guardStatus((await guardStore.load()), Date.now());
+        const today = status.today;
+        return {
+          allowed: !verdict.blocked,
+          blocked: verdict.blocked,
+          code: verdict.code,
+          reason: verdict.reason,
+          usage: { tokens: status.spentTokens, cost: status.spentCostUsd, calls: status.spentCalls },
+          limit: status.limits.dailyCostUsd,
+          today
+        };
       } catch (e) {
-        return { allowed: true, error: getErrorMessage(e) };
+        // Fail closed here too: an unreadable guard must not read as "allowed".
+        return { allowed: false, blocked: true, code: GUARD_BLOCK.STORAGE, error: getErrorMessage(e) };
+      }
+    }
+    // ---- (0.5) Run guard controls -------------------------------------
+    case 'guard_status': {
+      try {
+        const { verdict, state } = await guardStore.evaluate();
+        return { ok: true, status: guardStatus(state, Date.now()), verdict };
+      } catch (e) {
+        return { ok: false, error: getErrorMessage(e) };
+      }
+    }
+    case 'guard_engage_kill_switch': {
+      try {
+        const reason = typeof request.reason === 'string' && request.reason.trim()
+          ? request.reason.trim().substring(0, 300)
+          : 'Stopped by operator';
+        const by = typeof request.by === 'string' ? request.by : 'operator';
+        const r = await guardStore.engageKillSwitch(reason, by);
+        // Also stop a run that is live right now — engaging the switch should
+        // take effect immediately, not at the next step boundary.
+        if (agentRunning) {
+          try { stopAgent('kill switch engaged'); } catch (_e) { /* already stopping */ }
+        }
+        console.warn(`[Sentinel/guard] Kill switch ENGAGED by ${by}: ${reason}`);
+        return { ok: r.ok, error: r.error, status: r.status };
+      } catch (e) {
+        return { ok: false, error: getErrorMessage(e) };
+      }
+    }
+    case 'guard_clear_kill_switch': {
+      try {
+        const by = typeof request.by === 'string' ? request.by : 'operator';
+        const r = await guardStore.clearKillSwitch(by);
+        console.info(`[Sentinel/guard] Kill switch cleared by ${by}`);
+        return { ok: r.ok, error: r.error, status: r.status };
+      } catch (e) {
+        return { ok: false, error: getErrorMessage(e) };
+      }
+    }
+    case 'guard_set_limits': {
+      try {
+        const patch = {};
+        for (const k of ['dailyCostUsd', 'dailyCalls', 'windowMs', 'maxCalls']) {
+          if (request[k] !== undefined && request[k] !== null && Number.isFinite(Number(request[k]))) {
+            patch[k] = Number(request[k]);
+          }
+        }
+        if (!Object.keys(patch).length) return { ok: false, error: 'No valid limits supplied' };
+        const r = await guardStore.setLimits(patch);
+        return { ok: r.ok, error: r.error, status: r.status, limits: { ...DEFAULT_LIMITS, ...patch } };
+      } catch (e) {
+        return { ok: false, error: getErrorMessage(e) };
+      }
+    }
+    case 'guard_reset': {
+      try {
+        const r = await guardStore.reset();
+        return { ok: r.ok, error: r.error, status: r.status };
+      } catch (e) {
+        return { ok: false, error: getErrorMessage(e) };
       }
     }
     case 'check_resume_available': {

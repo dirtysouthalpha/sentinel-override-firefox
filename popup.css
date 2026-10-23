@@ -4086,3 +4086,6 @@ body {
 .sx-0240 { display: flex !important; align-items: center; gap: 8px; font-size: 13px !important; color: var(--text-secondary) !important; cursor: pointer; }
 .sx-0241 { display: flex !important; align-items: center; gap: 8px; font-size: 13px !important; color: var(--text-secondary) !important; cursor: pointer; }
 .sx-0242 { display: flex !important; align-items: center; gap: 8px; font-size: 13px !important; color: var(--text-secondary) !important; cursor: pointer; }
+
+/* Run guard status line — turns red while the kill switch is engaged. */
+#guardStatusDisplay.guard-engaged { color: var(--error-color); font-weight: 600; }

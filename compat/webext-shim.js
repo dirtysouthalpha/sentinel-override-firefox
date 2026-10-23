@@ -266,18 +266,115 @@ function wrapWithCallbackSupport(obj) {
   return wrapped;
 }
 
+// Receiver-aware broadcast.
+//
+// Firefox reports a rejected runtime.sendMessage broadcast as an "uncaught
+// exception" in the browser console even when the caller has already attached
+// .catch() — the rejection is reported at the moment it is created, so handling
+// it afterwards is not enough to silence the log. Chrome behaves differently: a
+// sendMessage with no receiver throws synchronously through
+// chrome.runtime.lastError and never creates a rejected promise. So the
+// telemetry/status broadcasts that Sentinel fires on a timer are pure console
+// noise on Firefox whenever the panel is closed.
+//
+// The fix is to not create the rejection at all: track live receivers through
+// runtime.onConnect and skip the broadcast when the set is empty.
+//
+// The port is a LIVENESS BEACON, not a data channel. Nothing is posted through
+// it — it exists only so the background can tell whether the sidebar document is
+// alive. When the set is non-empty the broadcast is passed to the native
+// sendMessage unchanged, so every existing receiver (the telemetry panel, the
+// chat status ticker, the report card) keeps working exactly as before. The
+// sidebar document is what opens the port, because that is the only context
+// that listens for these broadcasts; content scripts ignore them.
+// --- Receiver diagnostics -------------------------------------------------
+// The guard's entire effect is invisible from outside: when it suppresses, the
+// console is quiet, and when it passes a broadcast through, the message is simply
+// delivered. A popup that never opened its receiver port therefore produced the
+// exact same "quiet console" as a correct build — which is how a real regression
+// (a marker gate that could never evaluate true) shipped past a green
+// verification run. Recording the last connect/disconnect makes the receiver set
+// observable from the profile, so "is the panel actually registering?" is
+// answerable without a debugger. Best-effort: a storage failure must never affect
+// the guard.
+export const RECEIVER_DIAG_KEY = 'sentinel_receiver_diag';
+
+function recordReceiverDiag(browser, event, count) {
+  try {
+    const local = browser && browser.storage && browser.storage.local;
+    if (!local || typeof local.set !== 'function') return;
+    local.set({ [RECEIVER_DIAG_KEY]: { event, receivers: count, at: Date.now() } });
+  } catch (_e) { /* diagnostics must never break the guard */ }
+}
+
+export function installBroadcastGuard(browser, chrome) {
+  const runtime = chrome && chrome.runtime;
+  if (!runtime || typeof runtime.sendMessage !== 'function') return false;
+
+  const receivers = new Set();
+  try {
+    browser.runtime.onConnect.addListener((port) => {
+      receivers.add(port);
+      recordReceiverDiag(browser, 'connect', receivers.size);
+      port.onDisconnect.addListener(() => {
+        receivers.delete(port);
+        recordReceiverDiag(browser, 'disconnect', receivers.size);
+      });
+    });
+  } catch (_e) {
+    // No onConnect (should not happen in a WebExtension context) — fall back to
+    // always sending, which is the pre-guard behaviour.
+    return false;
+  }
+
+  const nativeSend = runtime.sendMessage;
+  chrome.runtime.sendMessage = function () {
+    var args = Array.prototype.slice.call(arguments);
+    var lastArg = args[args.length - 1];
+    var hasCallback = typeof lastArg === 'function';
+    if (receivers.size === 0) {
+      // Chrome's contract for a failed callback send is lastError + undefined.
+      if (hasCallback) {
+        if (typeof chrome !== 'undefined' && chrome.runtime) {
+          chrome.runtime.lastError = {
+            message: 'Could not establish connection. Receiving end does not exist.'
+          };
+        }
+        lastArg(undefined);
+        return Promise.resolve(undefined);
+      }
+      return Promise.resolve(undefined);
+    }
+    return nativeSend.apply(null, args);
+  };
+
+  // Reports whether the guard is live, so the caller can branch on it. Chrome
+  // has no such guard — there, sendMessage throws synchronously through
+  // lastError instead of creating a rejected promise — and an open receiver port
+  // would needlessly hold Chrome's MV3 service worker alive. popup-full.js reads
+  // the manifest instead of this return value, because it runs in a separate
+  // global scope and cannot see anything set here.
+  return true;
+}
+
 export function installWebextShim(browser) {
   if (!browser) throw new Error('[SO-93] browser namespace not found — not a WebExtension context?');
   const chrome = {};
   for (const ns of REAL_NAMESPACES) {
     if (browser[ns]) chrome[ns] = wrapWithCallbackSupport(browser[ns]);
   }
+  installBroadcastGuard(browser, chrome);
   chrome.debugger = makeFakeDebugger(browser);
   chrome.sidePanel = makeFakeSidePanel(browser);
   // Firefox has no tabGroups API; agent-engine groups attached tabs for a
   // visual glow. The stub keeps those call sites no-ops instead of throwing.
   chrome.tabGroups = { update: async () => undefined, query: async () => [] };
   globalThis.chrome = chrome;
+  // Whether the guard installed is NOT published on a global: the popup and the
+  // background have separate global scopes, so a marker set here would be
+  // invisible to popup-full.js deciding whether to open a receiver port.
+  // popup-full.js instead reads the manifest (background.scripts means the guard
+  // is live), which is synchronous and in-context.
   return chrome;
 }
 

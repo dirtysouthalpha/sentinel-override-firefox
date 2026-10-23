@@ -373,6 +373,30 @@
           <div class="sx-0044 text-subtle">Free models cost $0. Limit prevents accidental spend on paid models. Resets daily.</div>
         </div>
 
+        <!-- ══════ RUN GUARD / KILL SWITCH ══════ -->
+        <div class="sx-0041">
+          <div class="sx-0042 settings-card-title">🛑 Run Guard</div>
+          <div id="guardStatusDisplay" class="sx-0043">Checking guard…</div>
+          <div class="form-grid-2">
+            <div class="modal-field">
+              <label>Daily Call Limit</label>
+              <input type="number" id="guardDailyCallsInput" class="form-input" min="0" step="100" value="2000" placeholder="2000">
+            </div>
+            <div class="modal-field">
+              <label>Rate Limit (calls / 60s)</label>
+              <input type="number" id="guardMaxCallsInput" class="form-input" min="1" step="10" value="120" placeholder="120">
+            </div>
+          </div>
+          <div class="sx-0044 text-subtle">
+            The kill switch stops Sentinel everywhere — including a run that a
+            service-worker restart would otherwise resurrect. It survives restarts.
+          </div>
+          <div class="sx-0044">
+            <button type="button" id="guardKillSwitchBtn" class="sx-0040 form-btn-sm">🛑 Engage kill switch</button>
+            <button type="button" id="guardResetBtn" class="sx-0040 form-btn-sm">Reset guard state</button>
+          </div>
+        </div>
+
         <!-- Persisted-state indicator -->
         <div id="providerSaveStatus" role="status" aria-live="polite" class="sx-0045"></div>
 

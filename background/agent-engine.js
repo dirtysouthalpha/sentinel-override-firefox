@@ -10,6 +10,8 @@ import { waitForPageLoad, waitForPageReady, injectContentScript, sendMessageWith
 import { checkCapability, effectiveGrantedCapabilities, stripModelTrustFields } from './capabilities.js';
 import { MAX_PAGE_TEXT_LENGTH, TEXT_SAMPLE_LENGTH as _TEXT_SAMPLE_LENGTH, MAX_CDP_RESULT_LENGTH, API_CACHE_TTL_MS, BATCH_MODE_CACHE_TTL_MS, MAX_WAIT_TIME_MS, ONE_HUNDRED_MS, ONE_HUNDRED_FIFTY_MS, TWO_HUNDRED_MS, THREE_HUNDRED_MS, FOUR_HUNDRED_MS, FIVE_HUNDRED_MS, SIX_HUNDRED_MS, EIGHT_HUNDRED_MS, ONE_SECOND_MS, TWO_SECONDS_MS, THREE_SECONDS_MS, FIVE_SECONDS_MS, TEN_SECONDS_MS, FIFTEEN_SECONDS_MS, TWENTY_SECONDS_MS, THIRTY_SECONDS_MS, FORTY_FIVE_SECONDS_MS, ONE_MINUTE_MS, FIVE_MINUTES_MS, ONE_HOUR_MS, ONE_DAY_MS } from './constants.js';
 
+import { guardStore } from './run-guard.js';
+
 // v4.0 VISION-FIRST MODULES
 const VISION_DISCOVER = "const __sentinel_discoverElements = function() {\n  'use strict';\n\n  // ---- Selector for all interactive element types ----\n  var SELECTOR = 'a, button, input, select, textarea, [role=\"button\"], [role=\"link\"], '\n    + '[role=\"textbox\"], [role=\"combobox\"], [role=\"checkbox\"], [role=\"radio\"], '\n    + '[role=\"tab\"], [role=\"menuitem\"], [role=\"switch\"], [role=\"option\"], '\n    + '[onclick], [contenteditable]:not([contenteditable=\"false\"]), '\n    + '[tabindex]:not([tabindex=\"-1\"]), [aria-label], summary, [data-testid], label[for]';\n\n  // ---- Tags whose subtrees should be completely skipped ----\n  var SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE']);\n\n  function isInSkippedParent(el) {\n    var node = el;\n    while (node) {\n      if (SKIP_TAGS.has(node.tagName)) return true;\n      node = node.parentElement;\n    }\n    return false;\n  }\n\n  // ---- Computed-style checks ----\n  function isHiddenByStyle(el) {\n    var s = window.getComputedStyle(el);\n    if (s.opacity === '0') return true;\n    if (s.visibility === 'hidden') return true;\n    if (s.display === 'none') return true;\n    if (s.pointerEvents === 'none') return true;\n    return false;\n  }\n\n  // ---- Visibility helpers ----\n  function isRectVisible(rect) {\n    if (!rect) return false;\n    if (rect.width <= 0 || rect.height <= 0) return false;\n    return true;\n  }\n\n  function isOnScreen(rect) {\n    // Allow elements that are at least partially within the viewport\n    if (rect.right <= 0 || rect.bottom <= 0) return false;\n    if (rect.left >= window.innerWidth || rect.top >= window.innerHeight) return false;\n    return true;\n  }\n\n  // ---- Overlap / dedup helpers ----\n  function intersectionArea(r1, r2) {\n    var x1 = Math.max(r1.x, r2.x);\n    var y1 = Math.max(r1.y, r2.y);\n    var x2 = Math.min(r1.x + r1.w, r2.x + r2.w);\n    var y2 = Math.min(r1.y + r1.h, r2.y + r2.h);\n    if (x2 <= x1 || y2 <= y1) return 0;\n    return (x2 - x1) * (y2 - y1);\n  }\n\n  function overlapRatio(r1, r2) {\n    var area1 = r1.w * r1.h;\n    var area2 = r2.w * r2.h;\n    if (area1 === 0 || area2 === 0) return 0;\n    var inter = intersectionArea(r1, r2);\n    // Use the smaller area as denominator so parent/child overlap is detected\n    var minArea = Math.min(area1, area2);\n    return inter / minArea;\n  }\n\n  // ---- Extract display text ----\n  function getText(el) {\n    var t = '';\n    if (el.innerText) t = el.innerText;\n    else if (el.value) t = el.value;\n    else if (el.placeholder) t = el.placeholder;\n    else if (el.getAttribute && el.getAttribute('aria-label')) t = el.getAttribute('aria-label');\n    else if (el.getAttribute && el.getAttribute('title')) t = el.getAttribute('title');\n    return (t || '').replace(/[\\s\\n]+/g, ' ').trim().substring(0, 60);\n  }\n\n  // ---- Main ----\n  var candidates = document.querySelectorAll(SELECTOR);\n  var elements = [];\n  var i, el, rect, cs;\n\n  for (i = 0; i < candidates.length; i++) {\n    el = candidates[i];\n\n    // Skip elements inside script/style/etc.\n    if (isInSkippedParent(el)) continue;\n\n    // Check offsetParent (unless fixed)\n    cs = window.getComputedStyle(el);\n    var isFixed = cs.position === 'fixed';\n    if (!el.offsetParent && !isFixed) continue;\n\n    // Get bounding rect\n    var cRect = el.getBoundingClientRect();\n    if (!isRectVisible(cRect)) continue;\n    if (!isOnScreen(cRect)) continue;\n\n    // Check computed style\n    if (isHiddenByStyle(el)) continue;\n\n    elements.push({ el: el, rect: { x: cRect.left, y: cRect.top, w: cRect.width, h: cRect.height } });\n  }\n\n  // ---- Deduplicate overlapping elements (>80% overlap, keep more specific) ----\n  var removed = new Set();\n  for (i = 0; i < elements.length; i++) {\n    if (removed.has(i)) continue;\n    for (var j = i + 1; j < elements.length; j++) {\n      if (removed.has(j)) continue;\n      var ratio = overlapRatio(elements[i].rect, elements[j].rect);\n      if (ratio > 0.8) {\n        // Keep the one deeper in the DOM (more specific)\n        // j > i means j comes later in DOM order (deeper child usually)\n        // Compare actual DOM depth\n        var depthI = 0, depthJ = 0, n;\n        n = elements[i].el; while (n.parentElement) { depthI++; n = n.parentElement; }\n        n = elements[j].el; while (n.parentElement) { depthJ++; n = n.parentElement; }\n        if (depthJ >= depthI) {\n          removed.add(i);\n        } else {\n          removed.add(j);\n        }\n      }\n    }\n  }\n\n  var filtered = [];\n  for (i = 0; i < elements.length; i++) {\n    if (!removed.has(i)) filtered.push(elements[i]);\n  }\n\n  // ---- Cap at 150 ----\n  if (filtered.length > 150) filtered = filtered.slice(0, 150);\n\n  // ---- Build output and store references ----\n  window.__sentinelElements = new Map();\n  var result = [];\n  var clickableTags = new Set(['a', 'button', 'summary']);\n  var clickableRoles = new Set(['button', 'link', 'tab', 'menuitem', 'switch', 'option', 'checkbox', 'radio']);\n\n  for (i = 0; i < filtered.length; i++) {\n    var index = i + 1;\n    var e = filtered[i].el;\n    var r = filtered[i].rect;\n\n    window.__sentinelElements.set(index, e);\n    try { e.setAttribute('data-sentinel-index', String(index)); } catch(_ae) {}\n\n    var tag = e.tagName.toLowerCase();\n    var text = getText(e);\n    var ariaLabel = e.getAttribute && e.getAttribute('aria-label') || '';\n    var role = e.getAttribute && e.getAttribute('role') || '';\n    var type = e.getAttribute && e.getAttribute('type') || '';\n    var placeholder = e.getAttribute && e.getAttribute('placeholder') || '';\n    var href = (e.getAttribute && e.getAttribute('href') || '').substring(0, 100);\n\n    // Determine interactivity\n    var isClickable = clickableTags.has(tag)\n      || clickableRoles.has(role)\n      || e.hasAttribute && e.hasAttribute('onclick')\n      || tag === 'input' && (type === 'submit' || type === 'button' || type === 'image' || type === 'reset');\n    var isInput = tag === 'input' || tag === 'textarea' || tag === 'select'\n      || role === 'textbox' || role === 'combobox'\n      || (e.hasAttribute && e.hasAttribute('contenteditable'));\n\n    result.push({\n      index: index,\n      tag: tag,\n      text: text,\n      ariaLabel: ariaLabel,\n      role: role,\n      type: type,\n      placeholder: placeholder,\n      href: href,\n      rect: r,\n      isClickable: isClickable,\n      isInput: isInput\n    });\n  }\n\n  return JSON.stringify(result);\n}; return __sentinel_discoverElements();";
 const VISION_SOM = "const __sentinel_drawSoMOverlay = function() {\n  'use strict';\n\n  // ---- Remove any existing overlay ----\n  var existing = document.getElementById('sentinel-som-overlay');\n  if (existing) existing.remove();\n\n  // ---- Create canvas ----\n  var canvas = document.createElement('canvas');\n  canvas.id = 'sentinel-som-overlay';\n  canvas.style.position = 'fixed';\n  canvas.style.top = '0';\n  canvas.style.left = '0';\n  canvas.style.width = window.innerWidth + 'px';\n  canvas.style.height = window.innerHeight + 'px';\n  canvas.style.zIndex = '2147483647';\n  canvas.style.pointerEvents = 'none';\n  canvas.width = window.innerWidth * (window.devicePixelRatio || 1);\n  canvas.height = window.innerHeight * (window.devicePixelRatio || 1);\n  canvas.style.width = window.innerWidth + 'px';\n  canvas.style.height = window.innerHeight + 'px';\n\n  var ctx = canvas.getContext('2d');\n  var dpr = window.devicePixelRatio || 1;\n  ctx.scale(dpr, dpr);\n\n  // ---- Guard ----\n  if (!window.__sentinelElements || typeof window.__sentinelElements.forEach !== 'function') {\n    (document.body || document.documentElement).appendChild(canvas);\n    return 'ok';\n  }\n\n  var vw = window.innerWidth;\n  var vh = window.innerHeight;\n\n  // ---- Draw boxes and labels ----\n  window.__sentinelElements.forEach(function(el, idx) {\n    if (!el || !el.getBoundingClientRect) return;\n\n    var cRect = el.getBoundingClientRect();\n    var x = cRect.left;\n    var y = cRect.top;\n    var w = cRect.width;\n    var h = cRect.height;\n\n    // Skip zero-size\n    if (w <= 0 || h <= 0) return;\n\n    // Draw bounding box\n    ctx.strokeStyle = '#00ff88';\n    ctx.lineWidth = 2;\n    ctx.strokeRect(x, y, w, h);\n\n    // ---- Label dimensions ----\n    var lw = 24;\n    var lh = 18;\n    var lx = x;\n    var ly = y - lh;\n\n    // If label would go above the viewport, move it inside the box\n    if (ly < 0) {\n      ly = y;\n    }\n    // If label would go off the left edge, nudge right\n    if (lx < 0) {\n      lx = 0;\n    }\n    // If label would go off the right edge, nudge left\n    if (lx + lw > vw) {\n      lx = vw - lw;\n    }\n\n    // Draw label background\n    ctx.fillStyle = '#00ff88';\n    ctx.fillRect(lx, ly, lw, lh);\n\n    // Draw label text\n    ctx.fillStyle = '#000000';\n    ctx.font = 'bold 12px monospace';\n    ctx.textAlign = 'center';\n    ctx.textBaseline = 'middle';\n    ctx.fillText(String(idx), lx + lw / 2, ly + lh / 2);\n  });\n\n  (document.body || document.documentElement).appendChild(canvas);\n  return 'ok';\n}; __sentinel_drawSoMOverlay();";
@@ -998,6 +1000,19 @@ export async function startAgent(goal, sender, explicitTabId) {
   agentRunning = true;
   let startTabId;
   try {
+    // (0.5) KILL SWITCH — checked here, after the synchronous claim above and
+    // before any task is created. The claim is deliberately kept synchronous
+    // (see the note at the top of this function) so a second startAgent() call
+    // still loses the race; the await below runs inside this try, so the
+    // pre-loop failure path releases the claim. Without this, a service-worker
+    // restart resurrected a run the operator had explicitly stopped —
+    // sw-watchdog evaluateTick() returns 'resume' for an orphaned run and
+    // agentRunning is in-memory, so nothing refused it.
+    const _guard = await guardStore.check();
+    if (_guard.blocked) {
+      throw new Error(`RUN_GUARD_BLOCKED [${_guard.code}]: ${_guard.reason}`);
+    }
+
     // Create tracked task for this run (browser-use todo.md pattern).
     try {
       const _taskId = createTask(goal, []);
@@ -3312,13 +3327,15 @@ function _detectActionTypeLoop(history, _agentMemory) {
 // ========== Run Setup Helpers ==========
 
 /**
- * Pure decision helper for the run-loop credit gate. Given the response from
- * the background's `check_credit_limit` message, decide whether the run must
- * stop because the daily spend cap is exhausted.
+ * Pure decision helper for a credit-gate response. Given the response from the
+ * background's `check_credit_limit` message, decide whether the run must stop
+ * because the daily spend cap is exhausted.
  *
- * Kept pure and exported so the budget gate is unit-testable without spinning
- * up the whole agent loop. A missing/failed probe (`null`) never stops a run —
- * we only stop on an explicit `allowed === false`.
+ * Retained for its unit tests (tests/security-hardening.test.js) and as the
+ * shape contract for the legacy message response. The run loop itself now uses
+ * the persisted run guard (see the guard block in the loop) — this helper is
+ * no longer on the hot path. Kept pure so the budget gate stays testable
+ * without spinning up the whole agent loop.
  *
  * @param {{allowed?: boolean, usage?: {cost?: number}, limit?: number}|null} credit
  * @returns {{stop: boolean, summary: string}}
@@ -3655,28 +3672,36 @@ async function runAgentLoop(goal, workingTabId) {
         break;
       }
 
-      // Credit protection: enforce the daily spend cap in the run loop.
-      // background/index.js check_credit_limit() has always been advisory and
-      // llm-client.js consults it before each LLM call, but the agent loop
-      // itself never did — so a run kept dispatching steps and burning credit
-      // after the budget was exhausted. Mirror the step-limit behaviour: stop
-      // the run with a clear message the operator can act on.
+      // (0.5) Run guard. The old check_credit_limit probe was advisory and
+      // failed open, so a run kept dispatching steps and burning credit after
+      // the budget was exhausted — and the probe itself could not fail closed.
+      // The guard reads persisted state directly, so this is a real gate.
       try {
-        const _credit = await chrome.runtime.sendMessage({ action: 'check_credit_limit' }).catch(() => null);
-        const _creditGate = _evaluateCreditLimit(_credit);
-        if (_creditGate.stop) {
-          sendSilentUpdate(`💳 ${_creditGate.summary}`, stepCount);
+        const _gate = await guardStore.check();
+        if (_gate.blocked) {
+          const _summary = _gate.reason || 'Run guard stopped this run. Check Settings to resume.';
+          console.warn(`[Sentinel] run guard stopped the run: ${_gate.code} — ${_summary}`);
+          sendSilentUpdate(`🛑 ${_summary}`, stepCount);
           finished = true;
           reportData = captureReportData(goal, history, agentMemory, agentPlan, stepCount, apiCallCount);
-          chrome.runtime.sendMessage({ action: 'agent_finished', summary: _creditGate.summary }).catch((e) => {
-            console.error('[_creditSummary] Unhandled rejection:', e);
+          chrome.runtime.sendMessage({ action: 'agent_finished', summary: _summary }).catch((e) => {
+            console.error('[_guardSummary] Unhandled rejection:', e);
           });
           sendReportUpdate('generating');
           break;
         }
-      } catch (_creditErr) {
-        // Non-fatal: never abort a run because the credit probe itself failed.
-        console.warn('[Sentinel] credit limit check failed:', getErrorMessage(_creditErr));
+      } catch (_guardErr) {
+        // guardStore.check() resolves a verdict rather than throwing; reaching
+        // here means something unexpected. Fail closed rather than spend on an
+        // unknown budget state.
+        console.error('[Sentinel] run guard threw:', getErrorMessage(_guardErr));
+        const _summary = 'Run guard could not be evaluated — spending is paused. Reset the guard in Settings to resume.';
+        sendSilentUpdate(`🛑 ${_summary}`, stepCount);
+        finished = true;
+        reportData = captureReportData(goal, history, agentMemory, agentPlan, stepCount, apiCallCount);
+        chrome.runtime.sendMessage({ action: 'agent_finished', summary: _summary }).catch(() => {});
+        sendReportUpdate('generating');
+        break;
       }
 
       // Check for pending SPA transition -- if the page changed under us,

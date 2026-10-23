@@ -6,6 +6,48 @@
 // ========== Global State (initialized by popup-state.js) ==========
 initPopupState();
 
+// ========== Background Receiver Registration ==========
+// Firefox reports a rejected chrome.runtime.sendMessage broadcast as an
+// "uncaught exception" in the browser console even when the background has
+// already attached .catch(), because the rejection is reported when it is
+// created. So the background cannot silence it by handling the rejection — it
+// instead tracks live receivers and skips the broadcast when none exist.
+//
+// This panel document is the only listener for those broadcasts (the telemetry
+// panel, the chat status ticker, the report card), so it is what registers as a
+// receiver. The port carries no data — the background passes real broadcasts
+// through to the native sendMessage whenever this document is alive.
+//
+// Open the port only when the background actually installed the guard, which is
+// the Firefox event-page build (manifest background.scripts). Chrome's manifest
+// declares background.service_worker instead, and Chrome needs no receiver — its
+// sendMessage throws synchronously through lastError rather than rejecting — so
+// an open port there would only hold its MV3 service worker open. Reading the
+// manifest is synchronous and in-context, so unlike a global marker it cannot be
+// defeated by the popup and the background having separate global scopes.
+var _soManifest = null;
+var _soGuardLive = false;
+try {
+  _soManifest = chrome.runtime.getManifest();
+  var _soBackground = _soManifest && _soManifest.background;
+  _soGuardLive = !!_soBackground && Array.isArray(_soBackground.scripts);
+} catch (_e) {
+  // getManifest is absent in some contexts (the jest harness uses a bare chrome
+  // stub). With no manifest there is no way to prove the guard is live, so skip
+  // the port: broadcasts degrade to a no-op instead of crashing the bootstrap.
+  _soGuardLive = false;
+}
+if (_soGuardLive) {
+  try {
+    window.__sentinelPopupPort = chrome.runtime.connect({ name: 'sentinel-popup' });
+    window.__sentinelPopupPort.onDisconnect?.addListener(() => {
+      // The sidebar document is torn down per window; a fresh document opens a
+      // fresh port. Nothing to clean up beyond dropping our reference.
+      window.__sentinelPopupPort = null;
+    });
+  } catch (_e) { /* connect unavailable — broadcasts degrade to no-op */ }
+}
+
 // ========== Initialization ==========
 window.addEventListener('DOMContentLoaded', () => {
   loadThemePreference();
