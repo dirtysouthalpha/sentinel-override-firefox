@@ -1,10 +1,21 @@
 /* global sanitizeHtml */
+// innerHTML carrying a style= attribute is refused by style-src 'self'; the
+// shim in lib/csp-style.js normally rescues it, and setBodyHtml does so
+// explicitly so the error states below cannot render unstyled.
+function setBodyHtml(html) {
+  const body = document.getElementById('reportBody');
+  const S = window.SentinelStyles;
+  if (S && typeof S.setHtml === 'function') return S.setHtml(body, html);
+  if (body) body.innerHTML = html;
+  return 0;
+}
+
 (async function() {
       try {
         const stored = await chrome.storage.local.get(['_pendingPrintReport']);
         const data = stored && stored._pendingPrintReport;
         if (!data || !data.fullReport) {
-          document.getElementById('reportBody').innerHTML = '<div class="loading" style="color:#b00;">No report available to print. Generate a report first, then click Export PDF.</div>';
+          setBodyHtml('<div class="loading" style="color:#b00;">No report available to print. Generate a report first, then click Export PDF.</div>');
           return;
         }
         const goalEl = document.getElementById('reportGoal');
@@ -23,12 +34,12 @@
           .replace(/\[src:([a-z0-9_-]+)\]/gi, '<span class="src-chip">$1</span>')
           .replace(/\[unverified\]/gi, '<span class="src-unverified">unverified</span>');
 
-        document.getElementById('reportBody').innerHTML = sanitizeHtml(decorated);
+        setBodyHtml(sanitizeHtml(decorated));
 
         // Trigger the print dialog after a brief render delay so styles
         // apply and the user sees the page first.
         setTimeout(() => { window.print(); }, 350);
       } catch (e) {
-        document.getElementById('reportBody').innerHTML = '<div class="loading" style="color:#b00;">Error loading report: ' + (e && e.message ? e.message : e) + '</div>';
+        setBodyHtml('<div class="loading" style="color:#b00;">Error loading report: ' + (e && e.message ? e.message : e) + '</div>');
       }
     })();

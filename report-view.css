@@ -1,0 +1,234 @@
+/* Sentinel Override — investigation report view.
+ * Extracted from report-view.html so the page satisfies
+ * `style-src 'self'`: a <style> element is refused by that policy, a
+ * same-origin stylesheet is not. */
+:root {
+  --bg: #1a1a1a;
+  --bg-secondary: #232323;
+  --bg-tertiary: #2c2c2c;
+  --text: #e8e8e8;
+  --text-secondary: #aaa;
+  --text-tertiary: #777;
+  --border: #3a3a3a;
+  --accent: #ff6b00;
+  --accent-hover: #ff8a30;
+  --code-bg: #131313;
+  --chip-bg: rgba(255,107,0,0.12);
+  --chip-text: #ffb070;
+  --chip-border: rgba(255,107,0,0.35);
+  --warn-bg: rgba(220,53,69,0.12);
+  --warn-text: #ff8080;
+  --warn-border: rgba(220,53,69,0.4);
+}
+html.light-mode {
+  --bg: #ffffff;
+  --bg-secondary: #f7f7f7;
+  --bg-tertiary: #ececec;
+  --text: #111;
+  --text-secondary: #555;
+  --text-tertiary: #888;
+  --border: #ddd;
+  --accent: #2a6ce0;
+  --accent-hover: #1a5cd0;
+  --code-bg: #f4f4f4;
+  --chip-bg: #fff4e5;
+  --chip-text: #b85c00;
+  --chip-border: #ffd6a8;
+  --warn-bg: #fde7e7;
+  --warn-text: #b00020;
+  --warn-border: #f3b8b8;
+}
+
+* { box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  margin: 0;
+  padding: 0;
+  line-height: 1.65;
+  font-size: 14px;
+  min-height: 100vh;
+}
+
+/* Sticky header with the report toolbar */
+header.toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  padding: 12px 24px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.2);
+}
+.toolbar .brand {
+  font-weight: 700;
+  color: var(--accent);
+  font-size: 16px;
+  letter-spacing: 0.5px;
+  flex-shrink: 0;
+}
+.toolbar .timestamp {
+  color: var(--text-tertiary);
+  font-size: 12px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.toolbar button {
+  background: var(--bg-tertiary);
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 7px 14px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 120ms, border-color 120ms;
+}
+.toolbar button:hover {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+.toolbar button.primary {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+.toolbar button.primary:hover {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+/* Goal banner directly under the toolbar */
+.goal-banner {
+  padding: 14px 24px 16px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  color: var(--text-secondary);
+  font-style: italic;
+  line-height: 1.5;
+}
+.goal-banner .label {
+  font-style: normal;
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  display: block;
+  margin-bottom: 4px;
+}
+
+/* Main report column */
+main {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 32px 28px 80px;
+}
+
+h1 { font-size: 26px; margin: 28px 0 14px; color: var(--text); border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+h1:first-child { margin-top: 0; }
+h2 { font-size: 19px; margin: 24px 0 10px; color: var(--accent); }
+h3 { font-size: 15.5px; margin: 18px 0 8px; color: var(--text-secondary); }
+p { margin: 0 0 12px; }
+ul, ol { margin: 0 0 14px 22px; padding: 0; }
+li { margin-bottom: 6px; }
+strong { color: var(--text); }
+em { color: var(--text-secondary); }
+code {
+  background: var(--code-bg);
+  padding: 1.5px 6px;
+  border-radius: 3px;
+  font-family: 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  color: var(--accent);
+}
+pre {
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px 14px;
+  overflow-x: auto;
+  font-size: 12px;
+  line-height: 1.5;
+}
+pre code { background: none; padding: 0; color: var(--text); }
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 14px 0;
+  font-size: 12.5px;
+}
+th, td {
+  border: 1px solid var(--border);
+  padding: 8px 12px;
+  text-align: left;
+}
+th { background: var(--bg-tertiary); font-weight: 600; color: var(--text); }
+blockquote {
+  border-left: 3px solid var(--accent);
+  margin: 14px 0;
+  padding: 6px 0 6px 16px;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+hr { border: none; border-top: 1px solid var(--border); margin: 24px 0; }
+
+/* Source-citation chips */
+.src-chip {
+  display: inline-block;
+  background: var(--chip-bg);
+  color: var(--chip-text);
+  border: 1px solid var(--chip-border);
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-family: 'SF Mono', Menlo, Consolas, monospace;
+  margin: 0 2px;
+  cursor: help;
+}
+.src-unverified {
+  display: inline-block;
+  background: var(--warn-bg);
+  color: var(--warn-text);
+  border: 1px solid var(--warn-border);
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+  margin: 0 2px;
+}
+
+.loading { text-align: center; color: var(--text-tertiary); padding: 80px 0; font-size: 14px; }
+
+/* Theme toggle button - inline svg, no external deps */
+.theme-btn { padding: 6px 10px !important; }
+.theme-btn svg { width: 14px; height: 14px; vertical-align: middle; }
+
+@media (max-width: 720px) {
+  header.toolbar { padding: 10px 14px; gap: 8px; flex-wrap: wrap; }
+  .toolbar .brand { font-size: 14px; }
+  .toolbar .timestamp { display: none; }
+  .toolbar button { padding: 6px 10px; font-size: 11px; }
+  main { padding: 20px 16px 60px; }
+}
+
+@media print {
+  header.toolbar, .goal-banner .label { display: none; }
+  body { background: #fff; color: #000; }
+  main { max-width: none; padding: 20px; }
+  a { color: #000; text-decoration: none; }
+  .src-chip, .src-unverified { font-size: 9px; }
+}
+
+/* The goal banner starts hidden; report-view.js reveals it via the CSSOM. */
+#goalBanner { display: none; }

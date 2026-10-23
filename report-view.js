@@ -1,4 +1,15 @@
 /* global sanitizeHtml */
+// innerHTML carrying a style= attribute is refused by style-src 'self'; the
+// shim in lib/csp-style.js normally rescues it, and setBodyHtml does so
+// explicitly so the error states below cannot render unstyled.
+function setBodyHtml(html) {
+  const body = document.getElementById('reportBody');
+  const S = window.SentinelStyles;
+  if (S && typeof S.setHtml === 'function') return S.setHtml(body, html);
+  if (body) body.innerHTML = html;
+  return 0;
+}
+
 // Theme: respect the user's theme-preference from the popup if available;
     // default to dark for a comfortable reading experience.
     (function initTheme() {
@@ -34,8 +45,8 @@
                      (stored && stored._pendingPrintReport) ||
                      (stored && stored.last_agent_report);
         if (!data || !data.fullReport) {
-          document.getElementById('reportBody').innerHTML =
-            '<div class="loading" style="color:var(--warn-text);">No report available. Run an agent task first, then click "View Full Report".</div>';
+          setBodyHtml(
+            '<div class="loading" style="color:var(--warn-text);">No report available. Run an agent task first, then click "View Full Report".</div>');
           return;
         }
         __currentReport = data;
@@ -58,12 +69,12 @@
           .replace(/\[src:([a-z0-9_-]+)\]/gi, '<span class="src-chip" title="Source: $1">$1</span>')
           .replace(/\[unverified\]/gi, '<span class="src-unverified">unverified</span>');
 
-        document.getElementById('reportBody').innerHTML = sanitizeHtml(decorated);
+        setBodyHtml(sanitizeHtml(decorated));
         document.title = 'Sentinel Override — ' + (data.goal ? data.goal.substring(0, 60) : 'Investigation Report');
       } catch (e) {
-        document.getElementById('reportBody').innerHTML =
+        setBodyHtml(
           '<div class="loading" style="color:var(--warn-text);">Error loading report: ' +
-          escapeHtml(e && e.message ? e.message : String(e)) + '</div>';
+          escapeHtml(e && e.message ? e.message : String(e)) + '</div>');
       }
     })();
 

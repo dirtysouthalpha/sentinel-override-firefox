@@ -1331,16 +1331,26 @@ if (testConnectionBtn) testConnectionBtn.addEventListener('click', async () => {
   const STORAGE_KEY = 'sentinel-custom-css';
 
   function applyCustomCss(css) {
+    const cssText = css || '';
     try {
-      let el = document.getElementById(STYLE_ID);
-      if (!el) {
-        el = document.createElement('style');
-        el.id = STYLE_ID;
-        if (document.head) {
-          document.head.appendChild(el);
-        }
+      // A <style> element is refused by style-src 'self' with no
+      // 'unsafe-inline'. A constructed stylesheet registered through
+      // document.adoptedStyleSheets is not, so that is the primary path.
+      const S = window.SentinelStyles;
+      if (S && typeof S.adopt === 'function') {
+        S.adopt(cssText, STYLE_ID);
+        return;
       }
-      el.textContent = css || '';
+      // Fallback for a page that did not load the shim: a blob: URL in a
+      // <link rel=stylesheet> is same-origin and also satisfies 'self'.
+      let link = document.getElementById(STYLE_ID);
+      if (!link) {
+        link = document.createElement('link');
+        link.id = STYLE_ID;
+        link.rel = 'stylesheet';
+        (document.head || document.documentElement).appendChild(link);
+      }
+      link.href = URL.createObjectURL(new Blob([cssText], { type: 'text/css' }));
     } catch (e) {
       console.warn('[Sentinel/settings] CSS application failed:', window.getErrorMessage ? window.getErrorMessage(e) : String(e));
     }
