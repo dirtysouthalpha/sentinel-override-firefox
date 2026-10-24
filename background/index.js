@@ -28,6 +28,9 @@ import { tel, listPersistedRuns, loadPersistedRun, deletePersistedRun } from './
 // channel must not be a route around the loop's choke point.
 import { checkCapability, loadGrantedCapabilities } from './capabilities.js';
 import { validateAction } from './action-schema.js';
+// Host access is optional now (see permission-gate.js): the panel queries it on
+// open and offers the click that grants it.
+import { ensureHostAccess, hasHostAccess, lastRefusal } from './permission-gate.js';
 
 // (SO-87) Pending-goal fallback: a popup that dies mid-dispatch (sender-death
 // during SW cold start silently eats the run_agent_loop message) still leaves
@@ -233,7 +236,7 @@ addFrameRouterListeners();
 // ========== Content Script Auto-Injection Fallback ==========
 // Manifest content_scripts may fail to auto-inject on some Firefox versions.
 // This fallback injects the bundle once the top-level document finishes
-// loading. The __sentinelContentAlive ping-gate makes it a no-op when the
+// loading. The __sentinelContentAlive ping makes it a no-op when the
 // manifest already injected the bundle, so the two paths never double-run.
 chrome.webNavigation.onCompleted.addListener(async (details) => {
   if (details.frameId !== 0) return;
@@ -241,6 +244,15 @@ chrome.webNavigation.onCompleted.addListener(async (details) => {
   const url = details.url || "";
   if (!url || url.startsWith("chrome://") || url.startsWith("moz-extension://") || url.startsWith("about:") || url.startsWith("devtools://")) return;
   try {
+    // Same point-of-use gate as injectContentScript: this path calls
+    // executeScript directly, so without it the first injection after install
+    // would throw and the catch below would swallow it — a silent no-op that
+    // leaves the tab un-driven with nothing in the log.
+    const access = await ensureHostAccess({
+      reason: `Sentinel Override needs host access to drive tab ${details.tabId}`
+    });
+    if (!access.granted) throw new Error(access.error || `Cannot access tab ${details.tabId}`);
+
     const alreadyAlive = await chrome.scripting.executeScript({
       target: { tabId: details.tabId },
       func: () => !!(window.__sentinelContentAlive === true)
@@ -250,7 +262,13 @@ chrome.webNavigation.onCompleted.addListener(async (details) => {
       target: { tabId: details.tabId },
       files: ["content/dom-utils.js", "content/highlight.js", "content/wait-utils.js", "content/dropdown-utils.js", "content/special-inputs.js", "content/overlay-detector.js", "content/frame-manager.js", "content/shadow-dom.js", "content/action-hud.js", "content/cursor.js", "content/index.js", "content/warm-scan.js", "content/quick-assist.js"]
     });
-  } catch { /* tab may not be injectable yet */ }
+  } catch (err) {
+    // A missing tab really is not injectable and is expected; a refused host
+    // permission is not, and must not vanish without a trace.
+    if (err && /host access|host permission/i.test(String(err.message || ''))) {
+      console.warn('[Sentinel] auto-injection blocked:', err.message);
+    }
+  }
 }, { url: [{ schemes: ["http", "https"] }] });
 
 
@@ -366,6 +384,19 @@ chrome.runtime.onMessage.addListener(wrapMessageHandler(async (request, sender) 
     // Diagnostic ping — remove after startup bug is fixed
     case 'ping': {
       return { pong: true, ts: Date.now(), agentRunning: typeof agentRunning !== 'undefined' ? agentRunning : 'unknown' };
+    }
+    // Host-access state for the panel banner. The panel asks on open: if the
+    // capability is missing, it offers the one click that can grant it, since
+    // a service worker has no user gesture to raise the prompt with.
+    case 'host_access_status': {
+      const granted = await hasHostAccess();
+      return { granted, error: granted ? null : lastRefusal() };
+    }
+    // Grant host access from the panel. Runs inside the click handler, which is
+    // the user gesture Chrome requires — the background path cannot do this.
+    case 'host_access_grant': {
+      const res = await ensureHostAccess({ reason: 'Granted from the Sentinel Override panel' });
+      return res;
     }
     // (SO-91) Diagnostic: per-tab side panel availability (enabled flags).
     case 'sp_panel_state': {

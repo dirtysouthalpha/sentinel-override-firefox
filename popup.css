@@ -4089,3 +4089,62 @@ body {
 
 /* Run guard status line — turns red while the kill switch is engaged. */
 #guardStatusDisplay.guard-engaged { color: var(--error-color); font-weight: 600; }
+
+/* Host-access banner — hidden until the background reports the optional host
+   permission is missing. Sits under the header so it is seen before the agent
+   is started, which is the only moment the panel's click can grant it. */
+.host-access-banner {
+  display: none;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 12px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--warning-color);
+  border-radius: 6px;
+  background: var(--warning-a08);
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.host-access-banner.show {
+  display: flex;
+}
+
+.host-access-banner .host-access-icon {
+  color: var(--warning-color);
+  font-size: 16px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.host-access-banner .host-access-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.host-access-banner #host-access-reason {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.host-access-banner .host-access-grant {
+  flex-shrink: 0;
+  padding: 6px 12px;
+  border: 1px solid var(--warning-color);
+  border-radius: 4px;
+  background: var(--warning-color);
+  color: #050608;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.host-access-banner .host-access-grant:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}

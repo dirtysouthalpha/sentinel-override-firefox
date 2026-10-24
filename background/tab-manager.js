@@ -9,6 +9,11 @@ import { ONE_SECOND_MS, TWO_SECONDS_MS, THREE_SECONDS_MS, FIVE_SECONDS_MS, ONE_M
 // query params in URLs, and console entry source URLs. This is defence-in-depth
 // on top of the `network_read` capability gate, never a replacement for it.
 import { redactUrl, redactHeaders } from './secrets-redaction.js';
+// Point-of-use host access. `<all_urls>` is optional now, so the first
+// executeScript against a tab would throw a bare "Cannot access contents of the
+// page" if the capability had not been granted yet — which reads as a broken
+// extension rather than as a permission the user has not given.
+import { ensureHostAccess } from './permission-gate.js';
 
 // ========== Page Load Waiting ==========
 let pageLoadConfig = {
@@ -226,6 +231,16 @@ const CONTENT_SCRIPT_FILES = [
  * @returns {Promise<boolean>} True if the content script signaled ready.
  */
 export async function injectContentScript(tabId, maxAttempts = 3) {
+  // Ask for the capability here rather than in the manifest, so installing the
+  // extension no longer claims every site up front. Done before the fast path:
+  // that path also calls executeScript, so it needs the same access.
+  const access = await ensureHostAccess({
+    reason: `Sentinel Override needs host access to drive tab ${tabId}`
+  });
+  if (!access.granted) {
+    throw new Error(access.error || `Cannot access tab ${tabId}: host permission not granted`);
+  }
+
   // (SO-71) Fast path: if the bundle is already live in this tab (injected by a
   // prior call, another run, or the tab-manager navigation path), pinging it
   // succeeds without re-executing the files. Re-executing content/index.js in

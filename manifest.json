@@ -7,7 +7,6 @@
     "extension_pages": "script-src 'self'; object-src 'self'; style-src 'self'"
   },
   "permissions": [
-    "activeTab",
     "scripting",
     "tabs",
     "storage",
@@ -35,6 +34,11 @@
     "256": "icon-256.png"
   },
   "host_permissions": [
+    "https://cloudflare-dns.com/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ],
+  "optional_permissions": [
     "<all_urls>"
   ],
   "content_scripts": [

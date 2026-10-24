@@ -128,6 +128,17 @@
     <!-- (3.17.0) Header buttons moved to left action rail (#action-rail). -->
   </div>
 
+  <!-- Host-access banner. `<all_urls>` is optional, so the panel offers the
+       click that grants it; hidden until the background reports it missing. -->
+  <div id="host-access-banner" class="host-access-banner" role="alert">
+    <span class="host-access-icon" aria-hidden="true">⚠</span>
+    <span class="host-access-text">
+      <strong>Page access needed.</strong>
+      <span id="host-access-reason">Sentinel Override needs host access before it can act on a page.</span>
+    </span>
+    <button id="host-access-grant" class="host-access-grant" type="button">Grant access</button>
+  </div>
+
   <!-- Toolbar -->
   <div class="toolbar">
     <div class="search-box">
@@ -1081,6 +1092,7 @@
   <script src="popup-modules/modal-drag.js"></script>
   <script src="popup-modules/recent-chats.js"></script>
   <script src="popup-modules/telemetry-panel.js"></script>
+  <script src="popup-modules/host-access.js"></script>
   <script src="popup-full.js"></script>
 </body>
 </html>
