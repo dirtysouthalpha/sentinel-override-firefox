@@ -8,6 +8,7 @@ import { resolveStartTab, TAB_GATE } from './start-tab-gate.js';
 import { getPlatformProfile } from './platforms/index.js';
 import { waitForPageLoad, waitForPageReady, injectContentScript, sendMessageWithRetry, takeScreenshot, isValidUrl, getTabInfo, detachAllDebuggees, cdpDispatchClick, cdpDispatchDrag, cdpDispatchWheel, cdpDispatchZoom, cdpDispatchType, cdpDispatchKey, cdpExecuteJs, readConsoleMessages, readNetworkRequests } from './tab-manager.js';
 import { checkCapability, effectiveGrantedCapabilities, stripModelTrustFields } from './capabilities.js';
+import { checkSitePolicy, normalizeSiteRules } from './site-policy.js';
 import { MAX_PAGE_TEXT_LENGTH, TEXT_SAMPLE_LENGTH as _TEXT_SAMPLE_LENGTH, MAX_CDP_RESULT_LENGTH, API_CACHE_TTL_MS, BATCH_MODE_CACHE_TTL_MS, MAX_WAIT_TIME_MS, ONE_HUNDRED_MS, ONE_HUNDRED_FIFTY_MS, TWO_HUNDRED_MS, THREE_HUNDRED_MS, FOUR_HUNDRED_MS, FIVE_HUNDRED_MS, SIX_HUNDRED_MS, EIGHT_HUNDRED_MS, ONE_SECOND_MS, TWO_SECONDS_MS, THREE_SECONDS_MS, FIVE_SECONDS_MS, TEN_SECONDS_MS, FIFTEEN_SECONDS_MS, TWENTY_SECONDS_MS, THIRTY_SECONDS_MS, FORTY_FIVE_SECONDS_MS, ONE_MINUTE_MS, FIVE_MINUTES_MS, ONE_HOUR_MS, ONE_DAY_MS } from './constants.js';
 
 import { guardStore } from './run-guard.js';
@@ -3357,7 +3358,7 @@ async function _initRunState(goal) {
     stored = await chrome.storage.local.get([
       'agent_history', 'agent_context', 'agent_memory', 'expectedTenant',
       'ticketMode', 'ticketFormat', 'approvalMode', 'useTrustedInput',
-      'quickMode', 'grantedCapabilities',
+      'quickMode', 'grantedCapabilities', 'sitePolicyRules',
     ]);
   } catch (e) {
     console.warn('[Sentinel] runAgentLoop settings load failed:', getErrorMessage(e));
@@ -3370,6 +3371,11 @@ async function _initRunState(goal) {
     (stored && stored.approvalMode) ?? true,
     stored && stored.grantedCapabilities
   );
+  // An unreadable rule list resolves to [] — not to "no rules", which would
+  // silently disable the operator's site policy for the whole run. The built-in
+  // signals in site-policy.js still fire, so a storage fault degrades the
+  // operator's custom rules without opening a hole.
+  const _sitePolicyRules = normalizeSiteRules(stored && stored.sitePolicyRules);
   _runSettings = {
     ticketMode:      stored.ticketMode     ?? false,
     ticketFormat:    stored.ticketFormat   ?? 'standard',
@@ -3384,6 +3390,10 @@ async function _initRunState(goal) {
     // run snapshot and may round-trip through JSON; normalizeGrants() accepts
     // either. Computed once per run so the per-step gate stays pure.
     grantedCapabilities: [..._grantedCapabilities],
+    // Operator per-site rules (Phase 2.5), loaded once per run for the same
+    // reason as the grants above: the per-step site gate must stay pure, and a
+    // storage read per step would make its cost depend on the step count.
+    sitePolicyRules: _sitePolicyRules,
   };
   expectedTenant = (stored && typeof stored.expectedTenant === 'string') ? stored.expectedTenant.trim() : null;
   detectedTenant = null;
@@ -5627,6 +5637,56 @@ async function runAgentLoop(goal, workingTabId) {
         await persistHistory();
         await sleep(EIGHT_HUNDRED_MS);
         continue;
+      }
+
+      // Site policy gate (Phase 2.5). The capability gate asks "is this action
+      // privileged?"; this asks "is this a place the model should be acting
+      // alone at all?". A plain `click` is red and needs no grant, so without
+      // this gate the model could move money out of a banking page with no human
+      // in the loop. The class comes from the URL and the operator's stored
+      // rules — never from anything the model put on the action.
+      const _siteCheck = checkSitePolicy(command, {
+        currentUrl: (freshTabInfo && freshTabInfo.url) || (tabInfo && tabInfo.url) || '',
+        rules: _runSettings.sitePolicyRules,
+      });
+      if (_siteCheck.blocked) {
+        const _siteMsg = `BLOCKED (site policy): ${describeAction(command)} on `
+          + `${_siteCheck.url || 'an unknown site'} is blocked by operator policy`
+          + `${_siteCheck.reasons.length ? ` (${_siteCheck.reasons.join(', ')})` : ''}.`;
+        activityFail(stepCount, 'dispatch', describeAction(command), { result: _siteMsg });
+        sendActionResult(stepCount, _siteMsg, true);
+        historyPush({ step: stepCount, action: command, result: _siteMsg });
+        await persistHistory();
+        await sleep(EIGHT_HUNDRED_MS);
+        continue;
+      }
+      if (_siteCheck.handToUser) {
+        // Force the approval prompt even when approvalMode is off. Turning off
+        // per-action approval is a choice about routine actions; it is not a
+        // standing grant to act alone on a banking or SSO page. The reason is
+        // carried into the prompt so the operator is told WHY they are being
+        // asked rather than shown a bare "approve?".
+        const _why = _siteCheck.reasons.join(', ') || _siteCheck.class;
+        const _siteApproval = await requestApproval(command, stepCount, { reason: `high-stakes site: ${_why}` });
+        if (_siteApproval.rejected) {
+          historyPush({ step: stepCount, action: command, result: `Rejected by user (${_why})` });
+          command = { type: 'finish', summary: `Stopped: action on ${_siteCheck.url || 'high-stakes site'} rejected by user.`, _userRejected: true };
+          await persistHistory();
+          await sleep(ONE_SECOND_MS); continue;
+        }
+        if (_siteApproval.skipped) {
+          historyPush({ step: stepCount, action: command, result: `Skipped by user (${_why})` });
+          await persistHistory();
+          await sleep(ONE_SECOND_MS); continue;
+        }
+        if (_siteApproval.approved) command.approvalGranted = true;
+      } else if (_siteCheck.surfaced) {
+        // `caution` — visible but not blocking. Recorded so an action whose
+        // destination we could not classify is not indistinguishable from a
+        // clean pass.
+        try {
+          tel.info('site-policy', `caution: ${describeAction(command)} on ${_siteCheck.url || 'unknown site'}`, { reasons: _siteCheck.reasons });
+        } catch (_e) { /* telemetry must never break a dispatch */ }
       }
 
       // Handle note
@@ -7928,8 +7988,13 @@ function describeAction(command) {
   }
 }
 
-async function requestApproval(command, stepNumber) {
+async function requestApproval(command, stepNumber, opts = {}) {
   const description = describeAction(command);
+  // Why the prompt appeared, when it was raised by something other than the
+  // routine per-action gate (e.g. the site policy escalating a high-stakes
+  // page). Carried into the payload so the operator is told the reason instead
+  // of being shown a bare "approve?".
+  const reason = typeof opts.reason === 'string' ? opts.reason : '';
   // Per-call requestId so concurrent approvals don't cross-contaminate listeners.
   const requestId = crypto.randomUUID();
   // (3.14.0) Pin the service worker alive while we wait for the user. Without
@@ -7945,6 +8010,7 @@ async function requestApproval(command, stepNumber) {
     chrome.runtime.sendMessage({
       action: 'request_approval',
       payload: { action: command.type, description, stepNumber, requestId,
+        reason,
         ariaLabel: command.ariaLabel || null,
         elementText: command.elementText || null,
         selector: command.selector || null },
