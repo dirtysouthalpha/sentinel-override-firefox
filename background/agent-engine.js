@@ -304,8 +304,6 @@ import { emitReasoningTrace, emitReflection, buildTraceSummary, recentTraces, cl
 // spans, and records what it found.
 import { scanForInjection, describeInjectionFindings } from './injection-detector.js';
 import { createTask, markStepComplete, markStepFailed, buildTaskContextSummary } from './task-tracker.js';
-import { buildEnhancedSystemPrompt } from './system-prompt-rules.js';
-import { buildFastModeSystemPrompt, parseFastModeResponse } from './vision-fast-mode.js';
 import { _tenantsMatch, detectMfaInText, detectSignInWall, evaluateHallucinationRisk, _countSummaryClaims, _countSpecificClaims, _countSourceTags } from './agent-security.js';
 // ========== Agent State ==========
 let agentRunning = false;
@@ -7348,12 +7346,19 @@ return { ok: true, value: el.value };
               timestamp: Date.now()
             };
             const healingResult = RuntimeProfiler.heal(issue);
-            if (healingResult.healed) {
+            if (healingResult.healed && healingResult.executed) {
               console.log('[Sentinel Phase 5] Self-healing successful:', healingResult.strategy);
               healingHistory.push(healingResult);
-              consecutiveFailures = 0; // Reset after successful heal
+              consecutiveFailures = 0; // Reset after a verified heal
+            } else if (healingResult.healed) {
+              // The strategies are proposals: `tryHealingStrategy` simulates an
+              // outcome rather than running anything. Clearing the streak here
+              // would let a coin flip erase three real failures, so a proposed
+              // heal is recorded but the streak stands until a step succeeds.
+              console.warn('[Sentinel Phase 5] Self-healing proposed, not executed:', healingResult.strategy);
+              healingHistory.push(healingResult);
             } else {
-              console.warn('[Sentinel Phase 5] Self-healing failed:', healingResult.reason);
+              console.warn('[Sentinel Phase 5] Self-healing failed:', healingResult.reason || healingResult.status);
             }
           } catch (e) {
             console.warn('[Sentinel Phase 5] Self-healing error:', getErrorMessage(e));

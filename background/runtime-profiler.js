@@ -903,7 +903,21 @@ export function attemptHealing(issue) {
     healingId,
     status: healing.status,
     attempts: healing.attempts + 1,
-    successStrategy: healing.successStrategy || null
+    successStrategy: healing.successStrategy || null,
+    // The engine reads `healed` / `strategy` / `reason` off this object. It
+    // used to read all three and get `undefined` for each, because this return
+    // only ever carried `status` and `successStrategy` -- so every heal was
+    // logged as a failure and the failure streak was never cleared, even when
+    // the attempt reported success.
+    healed: healing.status === 'healed',
+    strategy: healing.successStrategy || null,
+    reason: healing.status === 'healed'
+      ? null
+      : 'no healing strategy reported success',
+    // The strategies are proposals, not executed actions: `tryHealingStrategy`
+    // simulates an outcome instead of running anything. A simulated success is
+    // therefore not a verified recovery, and a caller must not treat it as one.
+    executed: false
   };
 }
 
