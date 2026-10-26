@@ -275,7 +275,7 @@ import { isSPATransitionPending, clearSPATransition, notifyIfEnabled, startSwKee
 import { getActiveTabId, getTabContext, getAllTabContexts, openTab, switchToTab, closeTab, closeAllAgentTabs, updateSnapshot, resetAllContexts, findTabByLabel, registerInitialTab, getTabCount } from './tab-context.js';
 import { getClientStartupContext, markRunCompleted } from './client-knowledge.js';
 import { generateHeuristicPlan, _generateInitialPlan, _applyAdaptivePrompts, _waitForAdaptedGoalDecision, BARE_SITE_MAP } from './agent-planning.js';
-import { appendAuditEntry, getAuditLog, auditLogToCsv } from './audit-log.js';
+import { appendAuditEntry, getAuditLog, auditLogToCsv, saveComplianceReport } from './audit-log.js';
 import { runRecoverySkills, getSkillStats } from './skills/index.js';
 import { tel, startRun as telStartRun, endRun as telEndRun } from './telemetry.js';
 // (Phase 6) UAP bridge — broadcasts agent lifecycle events to external UAP server
@@ -296,14 +296,13 @@ import { synthesizeKnowledge, getSynthesisStatistics, clearSynthesis } from './k
 import { PredictiveEngine } from './predictive-engine.js';
 import { RuntimeProfiler } from './runtime-profiler.js';
 import { getErrorMessage, sleep } from './error-utils.js';
-import { buildSearchPageJs, buildFindElementsJs, buildGetPageStructureJs, buildGetFormFieldsJs, buildGetTextContentJs } from './dom-tools.js';
 import { emitReasoningTrace, emitReflection, buildTraceSummary, recentTraces, clearTraces } from './reasoning-trace-upgrade.js';
 // (2.3) Ingest-time prompt-injection detector. Page text is untrusted; this is
 // the mechanical half of the defence that the <UNTRUSTED_PAGE_CONTENT> tag only
 // asks for. It runs where page text is prepared, elides instruction-shaped
 // spans, and records what it found.
 import { scanForInjection, describeInjectionFindings } from './injection-detector.js';
-import { createTask, markStepComplete, markStepFailed, buildTaskContextSummary } from './task-tracker.js';
+import { createTask } from './task-tracker.js';
 import { _tenantsMatch, detectMfaInText, detectSignInWall, evaluateHallucinationRisk, _countSummaryClaims, _countSpecificClaims, _countSourceTags } from './agent-security.js';
 // ========== Agent State ==========
 let agentRunning = false;
@@ -7978,10 +7977,17 @@ return { ok: true, value: el.value };
       synthesisStats,
       reasoningTrace
     };
-    // Append compliance report to audit log
-    await appendAuditEntry(runLogId || 'unknown', {
+    // The report used to be built here and then dropped: the audit entry below
+    // claimed a compliance report was appended, but only a one-line outcome
+    // reached storage and every figure in the report was discarded. Persist the
+    // report itself so the claim is true, and say so when it could not be.
+    const _reportRunId = runLogId || 'unknown';
+    const _reportSaved = await saveComplianceReport(_reportRunId, complianceReport);
+    await appendAuditEntry(_reportRunId, {
       type: 'compliance_report',
-      outcome: 'V10.0 compliance report appended'
+      outcome: _reportSaved
+        ? 'V10.0 compliance report appended'
+        : 'V10.0 compliance report could not be persisted'
     }); // SO-90: schema-correct audit entry (was 3-arg, wrote hollow record)
     console.log('[Sentinel] Compliance report generated and added to audit log');
   } catch (e) {

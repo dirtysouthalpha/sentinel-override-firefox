@@ -22,6 +22,12 @@ function _storageKey(runId) {
   return STORAGE_KEY_PREFIX + String(runId).replace(/[^a-z0-9_-]/gi, '_');
 }
 
+const COMPLIANCE_KEY_PREFIX = 'compliance_';
+
+function _complianceKey(runId) {
+  return COMPLIANCE_KEY_PREFIX + String(runId).replace(/[^a-z0-9_-]/gi, '_');
+}
+
 /**
  * Append a single entry to the audit log for the given runId.
  * Fire-and-forget — never throws.
@@ -58,6 +64,48 @@ export async function appendAuditEntry(runId, entry) {
       console.error('[audit-log] Error:', getErrorMessage(e));
     });
   } catch (e) { console.warn('[Sentinel/audit-log] appendAuditEntry failed:', getErrorMessage(e)); }
+}
+
+/**
+ * Persist a run's compliance report so it outlives the run.
+ *
+ * The report used to be built and then dropped on the floor: the audit entry
+ * said a compliance report had been appended, but only a one-line outcome
+ * reached storage and every number in the report was discarded. Callers that
+ * need the figures back read them with :func:`getComplianceReport`.
+ *
+ * @param {string} runId - Identifier for the agent run the report belongs to.
+ * @param {object} report - The report to persist.
+ * @returns {Promise<boolean>} True when the report was written.
+ */
+export async function saveComplianceReport(runId, report) {
+  if (!runId) return false;
+  try {
+    await chrome.storage.local.set({ [_complianceKey(runId)]: report });
+    return true;
+  } catch (e) {
+    console.warn('[Sentinel/audit-log] saveComplianceReport failed:', getErrorMessage(e));
+    return false;
+  }
+}
+
+/**
+ * Read back a persisted compliance report.
+ *
+ * @param {string} runId - Identifier for the agent run.
+ * @returns {Promise<object|null>} The report, or null when none was stored.
+ */
+export async function getComplianceReport(runId) {
+  if (!runId) return null;
+  const key = _complianceKey(runId);
+  try {
+    const stored = await chrome.storage.local.get(key).catch(() => ({}));
+    const report = stored[key];
+    return report && typeof report === 'object' ? report : null;
+  } catch (e) {
+    console.warn('[Sentinel/audit-log] getComplianceReport failed:', getErrorMessage(e));
+    return null;
+  }
 }
 
 /**
