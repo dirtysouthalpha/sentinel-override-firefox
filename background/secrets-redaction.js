@@ -357,21 +357,3 @@ export function redactUrl(url) {
   if (redactedQuery === query) return url; // nothing sensitive → exact original
   return `${head}?${redactedQuery}${tail}`;
 }
-
-/**
- * Redact a network-buffer entry in place-free fashion: returns a shallow copy
- * with `url`, `requestHeaders` and `responseHeaders` scrubbed. Every other field
- * (`method`, `type`, `status`, timings, ...) is carried through untouched.
- * Pure. Convenience wrapper used by the tab-manager wiring.
- *
- * @param {object|null|undefined} entry - A per-request buffer entry.
- * @returns {object|*} Redacted copy, or the input unchanged when not an object.
- */
-export function redactNetworkEntry(entry) {
-  if (!entry || typeof entry !== 'object') return entry;
-  const out = { ...entry };
-  if (typeof out.url === 'string') out.url = redactUrl(out.url);
-  if (out.requestHeaders != null) out.requestHeaders = redactHeaders(out.requestHeaders);
-  if (out.responseHeaders != null) out.responseHeaders = redactHeaders(out.responseHeaders);
-  return out;
-}

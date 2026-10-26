@@ -6,7 +6,8 @@
 // badges overlaid on interactive elements, and ask for click coordinates by badge ID.
 //
 // This eliminates the DOM → text → LLM round-trip and goes straight from
-// screenshot to action. See also vision-grounding.js for the DOM-fallback approach.
+// screenshot to action. Coordinates come back as badge IDs, resolved against the
+// overlaid element list, so they are logical targets rather than raw pixels.
 
 import { getErrorMessage } from "./error-utils.js";
 

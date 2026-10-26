@@ -1656,7 +1656,7 @@ export function getCostTracker() {
  * @param {Object} CONFIG - Agent configuration with strategyShiftThreshold.
  * @returns {string} Strategy-shift directive string, or empty string if below threshold.
  */
-function _buildStrategyCtx(agentState, currentUrl, CONFIG) {
+export function _buildStrategyCtx(agentState, currentUrl, CONFIG) {
   if (!agentState || agentState.consecutiveFailures < CONFIG.strategyShiftThreshold) return '';
   const _u = (currentUrl || '').toLowerCase();
   let platformHints = '';
@@ -1683,9 +1683,13 @@ function _buildStrategyCtx(agentState, currentUrl, CONFIG) {
 - Long log loads: use wait_for_text with 30000ms timeout.
 `;
   }
+  // The coarse strategy labels above do not say *what* was actually attempted.
+  // The reasoning trace carries the per-step thought + action, which is what the
+  // model needs in order to avoid repeating itself.
+  const traceSummary = agentState.reasoningSummary || '';
   return `\nSTRATEGY SHIFT REQUIRED -- You have failed ${agentState.consecutiveFailures} times in a row.
 Approaches already tried: ${(agentState.currentStrategies || []).join(', ')}
-You MUST try a COMPLETELY DIFFERENT approach. Consider:
+${traceSummary ? `What you already did:\n${traceSummary}\n` : ''}You MUST try a COMPLETELY DIFFERENT approach. Consider:
 - Using "execute_js" to write custom JavaScript to accomplish the task
 - Using "read_network_requests" to read the underlying API response
 - Scrolling to find different elements
@@ -1834,7 +1838,9 @@ function _sanitizeHistory(history, isRunbook, CONFIG) {
  *   When omitted, derived here so legacy/test callers keep working.
  * @returns {string} The fully rendered system prompt.
  */
-  function _buildAgentPrompt(params) {
+  // Exported for tests: the ingest-time injection warning is rendered here, so
+  // this is where a test can assert it actually reaches the model's prompt.
+  export function _buildAgentPrompt(params) {
   const {
     quickModeCtx, runbookCtx, platformCtx,
     goal, currentUrl, stepCount, pageContent,
@@ -1912,7 +1918,7 @@ Current step: ${stepCount}
 ${agentState && agentState.budgetHint ? `Budget: ${agentState.budgetHint}\n` : ''}<GOAL>
 ${goal}
 </GOAL>
-
+${agentState && agentState.injectionCtx ? agentState.injectionCtx : ''}
 CURRENT PAGE CONTENT:
 <UNTRUSTED_PAGE_CONTENT>
 ${pageContent}

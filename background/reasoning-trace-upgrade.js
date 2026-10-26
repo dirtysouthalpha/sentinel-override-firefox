@@ -11,6 +11,42 @@
 // Based on ReAct (arXiv 2210.03629) and research showing CoT + action
 // interleaving improves ALFWorld +34% and WebShop +10%.
 
+// Recent traces, newest last. Both emitReasoningTrace and emitReflection append
+// here, and buildTraceSummary reads from here. Without a store the summary has
+// no source and both emitters are decorative: they run, log, and are discarded.
+const TRACE_BUFFER = [];
+const MAX_BUFFERED_TRACES = 50;
+
+/**
+ * Append a trace to the bounded buffer.
+ * @param {object} trace - Reasoning trace or reflection object
+ */
+export function recordTrace(trace) {
+  if (!trace || typeof trace !== 'object') return;
+  TRACE_BUFFER.push(trace);
+  if (TRACE_BUFFER.length > MAX_BUFFERED_TRACES) {
+    TRACE_BUFFER.splice(0, TRACE_BUFFER.length - MAX_BUFFERED_TRACES);
+  }
+}
+
+/**
+ * Return the most recent traces, oldest first.
+ * @param {number} maxTraces - Maximum number to return
+ * @returns {Array}
+ */
+export function recentTraces(maxTraces = 5) {
+  if (!Array.isArray(TRACE_BUFFER) || TRACE_BUFFER.length === 0) return [];
+  return TRACE_BUFFER.slice(-maxTraces);
+}
+
+/**
+ * Drop all buffered traces. Called between runs so a re-run does not inherit
+ * the previous run's reasoning as if it were its own.
+ */
+export function clearTraces() {
+  TRACE_BUFFER.length = 0;
+}
+
 /**
  * Emit a reasoning trace before an action.
  * @param {string} thought - The reasoning behind the action
@@ -41,6 +77,7 @@ export function emitReasoningTrace(thought, actionType, params, stepNumber) {
     }
   } catch (_e) { /* non-fatal */ }
 
+  recordTrace(trace);
   return trace;
 }
 
@@ -72,6 +109,7 @@ export function emitReflection(failureDescription, reflection, stepNumber) {
     }
   } catch (_e) { /* non-fatal */ }
 
+  recordTrace(reflectionObj);
   return reflectionObj;
 }
 
