@@ -496,6 +496,15 @@ async function ensureObservabilityListeners(tabId) {
     await chrome.debugger.sendCommand({ tabId }, 'Network.enable');
     anySucceeded = true;
   } catch (_e) { /* Network domain may not be available */ }
+  // (2.7) Page and Inspector make CDP emit Page.javascriptDialogOpening and
+  // Inspector.targetCrashed, which event-watchdogs.js listens for.
+  try {
+    await chrome.debugger.sendCommand({ tabId }, 'Page.enable');
+    anySucceeded = true;
+  } catch (_e) { /* Page domain may not be available */ }
+  try {
+    await chrome.debugger.sendCommand({ tabId }, 'Inspector.enable');
+  } catch (_e) { /* Inspector domain may not be available */ }
   if (anySucceeded) {
     observabilityListenersInstalled.add(tabId);
   }

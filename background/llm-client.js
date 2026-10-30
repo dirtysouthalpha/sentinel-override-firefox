@@ -1918,7 +1918,7 @@ Current step: ${stepCount}
 ${agentState && agentState.budgetHint ? `Budget: ${agentState.budgetHint}\n` : ''}<GOAL>
 ${goal}
 </GOAL>
-${agentState && agentState.injectionCtx ? agentState.injectionCtx : ''}
+${agentState && agentState.injectionCtx ? agentState.injectionCtx : ''}${agentState && agentState.browserEventsCtx ? agentState.browserEventsCtx : ''}
 CURRENT PAGE CONTENT:
 <UNTRUSTED_PAGE_CONTENT>
 ${pageContent}
