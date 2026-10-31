@@ -303,6 +303,10 @@ import { emitReasoningTrace, emitReflection, buildTraceSummary, recentTraces, cl
 // spans, and records what it found.
 import { scanForInjection, describeInjectionFindings } from './injection-detector.js';
 import { createTask } from './task-tracker.js';
+// (2.7) Event-driven watchdogs: downloads / dialogs / crashes / navigation for
+// the run's tabs. Started in runAgentLoop, stopped on every exit path, drained
+// into agentState.browserEventsCtx right before each LLM call.
+import { startRunWatchdogs, stopRunWatchdogs, formatEventsForPrompt, WATCHDOG_ERRORS } from './event-watchdogs.js';
 import { _tenantsMatch, detectMfaInText, detectSignInWall, evaluateHallucinationRisk, _countSummaryClaims, _countSpecificClaims, _countSourceTags } from './agent-security.js';
 // ========== Agent State ==========
 let agentRunning = false;
@@ -332,6 +336,9 @@ let _injectionFindings = [];
 // count. agentState is rebuilt from scratch every loop iteration, so these live
 // at module scope and are copied into it -- see the agentState literal.
 let _injectionCtx = '';
+// (2.7) Run-scoped event-watchdog state: renderer crashes seen this run (the
+// second one ends the run).
+let _tabCrashCount = 0;
 let _injectionHitCount = 0;
 const _stepScreenshots = new Map();
 // (SO-90) zoom_at's magnified capture; consumed by the next observation's
@@ -846,6 +853,8 @@ export function resetAgentState() {
   clearTraces(); // reasoning traces are run-scoped; a re-run must not inherit them
   _injectionFindings = []; // (2.3) injection findings are run-scoped too
   _injectionCtx = ''; // and the warning must not leak into the next run's first prompt
+  _tabCrashCount = 0;
+  stopRunWatchdogs(); // (2.7) never carry listeners or buffered events into the next run
   _injectionHitCount = 0;
   // Reset CDP observe-path optimization flags so a new run always gets a fresh
   // page ready check and overlay nuke on its first observation.
@@ -1208,6 +1217,7 @@ export async function startAgent(goal, sender, explicitTabId) {
   // stuck at true if runAgentLoop crashes before its own cleanup runs.
   runAgentLoop(finalGoal, startTabId).catch(err => {
     console.error('[Sentinel/Loop] runAgentLoop crashed unexpectedly:', err);
+    try { stopRunWatchdogs(); } catch (_wdErr) { /* best effort: listeners must not outlive the run */ }
     console.error('[Sentinel/Loop] Stack:', err && err.stack ? err.stack : '[no stack]');
     emitAgentStatus(startTabId, 'error', `Agent crashed: ${getErrorMessage(err)}`);
     agentRunning = false;
@@ -1359,6 +1369,8 @@ export async function stopAgent() {
     runLogBuffer.push({ step: 0, timestamp: new Date().toISOString(), kind: 'run_stopped_by_user', text: 'Run stopped by user.' });
     if (runLogId) chrome.storage.local.set({ [`run_log_${runLogId}`]: { goal: (_lastGoal || ''), runLogId, entries: runLogBuffer, lastUpdate: Date.now() } }).catch(() => {});
   } catch (_e) { /* best-effort: record stamping must never break the stop */ }
+  // (2.7) Remove the run's browser-event listeners.
+  try { stopRunWatchdogs(); } catch (e) { console.error('[Sentinel] stopRunWatchdogs failed:', getErrorMessage(e)); }
   // Release any CDP attachments held by the screenshot pipeline.
   try { await detachAllDebuggees(); } catch (e) { console.error('[Sentinel] Error in agent-engine.js:', getErrorMessage(e)); }
   // (3.7.2) Dissolve the visual tab group + reset side-panel availability.
@@ -3548,6 +3560,16 @@ async function runAgentLoop(goal, workingTabId) {
 
   goal = await _initRunState(goal);
 
+  // (2.7) Subscribe to downloads / dialogs / crashes / navigation for this
+  // run's tabs. startRunWatchdogs() stops any previous run's watchdog first.
+  _tabCrashCount = 0;
+  let _wdStep = 0;
+  const _watchdog = startRunWatchdogs({
+    tabId: workingTabId,
+    isRunTab: (id) => !!getTabContext(id),
+    onDialog: (dialog) => _decideJsDialog(dialog, _wdStep),
+  });
+
   let consecutiveNavigates = 0;
   let consecutiveInjectionFailures = 0;
   // Observation skip cache — reused when previous step was non-mutating and
@@ -3645,6 +3667,7 @@ async function runAgentLoop(goal, workingTabId) {
 
       _lastLoopUrl = _lastObservedUrl;
       stepCount++;
+      _wdStep = stepCount;
       // (3.16.0) Signal new step to the popup so it can create a fresh
       // activity stream container BEFORE observation/AI consultation begin.
       try { sendAgentStepStart(stepCount, agentPlan ? agentPlan.length : 0); } catch (e) { console.error('[Sentinel] Error in agent-engine.js:', getErrorMessage(e)); }
@@ -3727,10 +3750,31 @@ async function runAgentLoop(goal, workingTabId) {
         break;
       }
 
+      // (2.7) Watchdog signals: fatal tab events fail the step with a specific
+      // error now instead of surfacing later as a stall timeout, and a
+      // committed navigation invalidates the cached observation below.
+      const _wdSignals = _watchdog.takeSignals();
+      if (_wdSignals.fatal) {
+        const _f = _wdSignals.fatal;
+        const _fatalOutcome = await _handleWatchdogFatal(_f, stepCount);
+        if (_fatalOutcome.endRun) {
+          finished = true;
+          reportData = captureReportData(goal, history, agentMemory, agentPlan, stepCount, apiCallCount);
+          chrome.runtime.sendMessage({ action: 'agent_finished', summary: _fatalOutcome.summary, error: true, errorCode: _f.code }).catch(() => {});
+          sendReportUpdate('generating');
+          break;
+        }
+        consecutiveFailures++;
+        _cachedObservation = null;
+        _cachedPageContent = null;
+        _lastObservedUrl = '';
+        _lastObservedDomHash = 0;
+      }
+
       // Check for pending SPA transition -- if the page changed under us,
       // re-scan instead of using stale observation data
-      if (isSPATransitionPending()) {
-        sendSilentUpdate('SPA page transition detected -- re-scanning...', stepCount);
+      if (isSPATransitionPending() || _wdSignals.pageChanged) {
+        sendSilentUpdate(_wdSignals.pageChanged ? 'Navigation detected by watchdog -- re-scanning...' : 'SPA page transition detected -- re-scanning...', stepCount);
         clearSPATransition();
         // Invalidate screenshot cache for current active tab
         const spaCtx = getTabContext(getActiveTabId());
@@ -3768,6 +3812,8 @@ async function runAgentLoop(goal, workingTabId) {
         sendReportUpdate('generating');
         break;
       }
+
+      _watchdog.setPrimaryTab(tab); // (2.7) the tab whose close/crash fails the step
 
       // Get tab info
       let tabInfo = await getTabInfo(tab);
@@ -4768,7 +4814,7 @@ async function runAgentLoop(goal, workingTabId) {
       };
 
       const _zoomAnnotation = formatZoomRegion(_zoomRegion);
-      const agentState = { apiCallCount, agentMemory, visionMode: _visionMode, visionElementTree: _visionElementTree, visionElements: _visionElements, visionElementMap: _visionElementMap, consecutiveFailures, currentStrategies, agentPlan, currentPlanStep, loopDirective, screenshotMeta, budgetHint: _budgetHint, clientKnowledgeText, pendingVerification, quickMode: _runSettings.quickMode, cdpFallbackActive: _cdpFallbackActive, stepContext: _stepContext, zoomRegion: _zoomRegion, zoomAnnotation: _zoomAnnotation, reasoningSummary: buildTraceSummary(recentTraces(5)), injectionCtx: _injectionCtx, injectionHitCount: _injectionHitCount };
+      const agentState = { apiCallCount, agentMemory, visionMode: _visionMode, visionElementTree: _visionElementTree, visionElements: _visionElements, visionElementMap: _visionElementMap, consecutiveFailures, currentStrategies, agentPlan, currentPlanStep, loopDirective, screenshotMeta, budgetHint: _budgetHint, clientKnowledgeText, pendingVerification, quickMode: _runSettings.quickMode, cdpFallbackActive: _cdpFallbackActive, stepContext: _stepContext, zoomRegion: _zoomRegion, zoomAnnotation: _zoomAnnotation, reasoningSummary: buildTraceSummary(recentTraces(5)), injectionCtx: _injectionCtx, injectionHitCount: _injectionHitCount, browserEventsCtx: '' };
       // Cap history window for prompt to control token cost (CONFIG.historyWindow).
       // Also strip any base64Image / screenshot fields from past entries -- only the
       // most recent observation needs the image (passed separately as base64Image arg).
@@ -5082,6 +5128,9 @@ async function runAgentLoop(goal, workingTabId) {
         }
         try {
           console.log('[Sentinel/Loop] Calling LLM for step ' + (stepCount+1) + '...');
+          // (2.7) Drain the watchdog buffer only when the LLM is actually
+          // consulted, so queued/skill-driven steps don't swallow events.
+          agentState.browserEventsCtx = formatEventsForPrompt(_watchdog.drainEvents());
           command = await callLLMWithRetry(
             trimmedElements, allElements.length, pageText, base64Image,
             goal, promptHistory, stepCount, currentUrl,
@@ -7868,6 +7917,11 @@ return { ok: true, value: el.value };
     }
   }
 
+  // (2.7) Remove this run's browser-event listeners. Pass the instance so a
+  // loop that is still unwinding after a user stop cannot kill a newer run's
+  // watchdog.
+  try { stopRunWatchdogs(_watchdog); } catch (e) { console.error('[Sentinel] stopRunWatchdogs failed:', getErrorMessage(e)); }
+
   // Release any CDP debugger attachments held during the run.
   try { await detachAllDebuggees(); } catch (e) { console.error('[Sentinel] Error in agent-engine.js:', getErrorMessage(e)); }
 
@@ -8104,10 +8158,67 @@ function describeAction(command) {
     case 'wait_for_navigation': return 'Wait for navigation';
     case 'read_page':   return 'Read page';
     case 'dismiss_overlay': return 'Dismiss overlay';
+    case 'handle_dialog': return `Page ${command.dialogType || 'dialog'}: "${(command.message || '').toString().slice(0, 120)}". Approve = OK, Reject = Cancel`;
     case 'lookup':            return `DNS lookup: ${command.domain || '(no domain)'} (${command.record_type || 'A'})`;
     case 'run_remote_command': return `Remote cmd (${command.command_type || 'powershell'}): ${(command.command || '').toString().slice(0, 60)}`;
     default: return `${command.type}: ${JSON.stringify(command).slice(0, 100)}`;
   }
+}
+
+/**
+ * (2.7) Decide a page's confirm / prompt / beforeunload dialog. It is never
+ * auto-accepted: the user decides through the existing approval UI, and
+ * anything except an explicit approval (reject, skip, hard timeout) dismisses
+ * it. Alerts never get here; the watchdog accepts those itself.
+ * @param {{type:string,message:string,defaultPrompt?:string}} dialog
+ * @param {number} stepNumber
+ * @returns {Promise<{accept:boolean,promptText?:string}>}
+ */
+async function _decideJsDialog(dialog, stepNumber) {
+  sendSilentUpdate(`💬 Page opened a ${dialog.type} dialog: "${dialog.message}" -- waiting for your decision`, stepNumber);
+  const res = await requestApproval(
+    { type: 'handle_dialog', dialogType: dialog.type, message: dialog.message },
+    stepNumber,
+    { reason: `page opened a JavaScript ${dialog.type} dialog` }
+  );
+  const accept = !!(res && res.approved);
+  return accept && dialog.type === 'prompt' ? { accept, promptText: dialog.defaultPrompt || '' } : { accept };
+}
+
+/**
+ * (2.7) Turn a fatal watchdog signal into a loud step failure. A closed run
+ * tab with no other run tab left, or a second renderer crash, ends the run.
+ * A first crash reloads the tab once and the agent is told why.
+ * @param {{code:string,tabId:number,message:string}} fatal
+ * @param {number} stepNumber
+ * @returns {Promise<{endRun:boolean, summary?:string}>}
+ */
+async function _handleWatchdogFatal(fatal, stepNumber) {
+  const code = fatal.code;
+  sendSilentUpdate(`❌ ${code}: ${fatal.message}`, stepNumber);
+  try { tel.warn('watchdog', `${code}: ${fatal.message}`, { code, tabId: fatal.tabId }); } catch (_e) { /* telemetry is best-effort */ }
+  if (code === WATCHDOG_ERRORS.TAB_CLOSED) {
+    const remaining = getActiveTabId();
+    if (!remaining || remaining === fatal.tabId) {
+      historyPush({ step: stepNumber, action: { type: 'note', text: `${code}` }, result: `STEP FAILED (${code}): ${fatal.message} No run tab is left.` });
+      return { endRun: true, summary: `Run tab closed (${code}). ${fatal.message} Task interrupted.` };
+    }
+    historyPush({ step: stepNumber, action: { type: 'note', text: `${code}` }, result: `STEP FAILED (${code}): ${fatal.message} Continuing on tab ${remaining}; re-read the page before acting.` });
+    return { endRun: false };
+  }
+  if (code === WATCHDOG_ERRORS.TAB_CRASHED) {
+    _tabCrashCount++;
+    if (_tabCrashCount > 1) {
+      historyPush({ step: stepNumber, action: { type: 'note', text: `${code}` }, result: `STEP FAILED (${code}): ${fatal.message} Second crash this run, so the run stops.` });
+      return { endRun: true, summary: `Tab crashed twice (${code}). ${fatal.message} Task interrupted.` };
+    }
+    let reloaded = false;
+    try { await chrome.tabs.reload(fatal.tabId); reloaded = true; } catch (_e) { reloaded = false; }
+    historyPush({ step: stepNumber, action: { type: 'note', text: `${code}` }, result: `STEP FAILED (${code}): ${fatal.message} ${reloaded ? 'The tab was reloaded once; any unsaved form input is lost. Re-read the page and redo the last step if needed.' : 'Reload failed; navigate to the page again.'}` });
+    return { endRun: false };
+  }
+  historyPush({ step: stepNumber, action: { type: 'note', text: `${code}` }, result: `STEP FAILED (${code}): ${fatal.message}` });
+  return { endRun: false };
 }
 
 async function requestApproval(command, stepNumber, opts = {}) {
