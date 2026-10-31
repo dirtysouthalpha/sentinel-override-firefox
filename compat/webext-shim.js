@@ -115,6 +115,9 @@ export function makeFakeDebugger(browser) {
     attach: async (target) => { attached.add(target && target.tabId); return {}; },
     detach: async (target) => { attached.delete(target && target.tabId); return {}; },
     getTargets: async () => [...attached].map((tabId) => ({ tabId, attached: true })),
+    // (2.7) This fake never emits CDP events (no JS dialog or crash events), so
+    // background/event-watchdogs.js must use its content-script lane instead.
+    emitsEvents: false,
     onEvent: { addListener() {}, removeListener() {}, hasListener: () => false },
     onDetach: { addListener() {}, removeListener() {}, hasListener: () => false },
     sendCommand: async (target, method, params) => {

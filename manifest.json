@@ -105,6 +105,28 @@
       ],
       "run_at": "document_idle",
       "all_frames": false
+    },
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content/dialog-guard-main.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": true,
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "compat/content-shim.js",
+        "content/dialog-guard-bridge.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": true
     }
   ],
   "commands": {
