@@ -38,9 +38,32 @@
 // engine's singleton helpers below run stop() before each new start, so a run
 // that never reached its cleanup path cannot leak listeners into the next one.
 //
-// Firefox: there is no chrome.debugger, so the dialog and renderer-crash
-// lanes are inactive there (feature-detected, no throw). Downloads,
-// navigation, new tabs and tab-closed work through the same WebExtension APIs.
+// Content lane (no chrome.debugger, i.e. Firefox): the CDP dialog and crash
+// lanes cannot run, so a content-script fallback takes over. It is chosen by
+// feature detection (no chrome.debugger, or the Firefox shim's fake that is
+// marked `emitsEvents: false`; `opts.contentLane` overrides it for tests) and
+// is never used when a real debugger exists, so the Chrome CDP path is
+// unchanged.
+//   dialogs  content/dialog-guard-main.js (MAIN world) wraps alert / confirm /
+//            prompt while the tab is armed and answers them synchronously by
+//            the CDP lane's no-decision policy: alert accepted, confirm and
+//            prompt dismissed (the user cannot be asked from inside a
+//            blocking call). beforeunload prompts are reported and left to
+//            the browser. content/dialog-guard-bridge.js (isolated world)
+//            validates the page's report and forwards it over a runtime Port
+//            named PAGE_WATCH_PORT. The page can only ever produce a `dialog`
+//            event for its own tab: tabId, frame and origin come from
+//            port.sender, never from the page, and nothing on this lane can
+//            set `pageChanged` or a fatal signal from page input.
+//   crashes  (a) the frame-0 Port disconnecting while the tab still exists and
+//            no navigation/reload is in flight (webNavigation.onBeforeNavigate,
+//            onCommitted, tabs.onUpdated status=loading, a newer Port), after
+//            a short grace; (b) tabs.onUpdated `crashed: true` where a browser
+//            reports it, and `discarded` as a non-fatal event; (c) a ping/pong
+//            heartbeat over the Port that times out while the tab is complete.
+//            All three raise the same TAB_CRASHED fatal the CDP lane raises.
+// Downloads, navigation, new tabs and tab-closed use the same WebExtension
+// APIs on both lanes.
 
 import { scanForInjection } from './injection-detector.js';
 
@@ -50,6 +73,21 @@ export const WATCHDOG_ERRORS = Object.freeze({
 });
 
 export const DEFAULT_MAX_EVENTS = 20;
+
+// Content lane wire names. They must match content/dialog-guard-bridge.js.
+export const PAGE_WATCH_PORT = 'so-page-watch';
+export const PAGE_WATCH_CONNECT_MSG = 'so_page_watch_connect';
+export const CONTENT_LANE_DEFAULTS = Object.freeze({
+  heartbeatMs: 5000,       // ping interval
+  hangTimeoutMs: 20000,    // no pong for this long on a complete tab = hung
+  disconnectGraceMs: 1500, // wait this long after a Port drop before judging it
+  navGraceMs: 10000,       // a Port drop this close to a navigation is the navigation
+  dialogSuspendMs: 60000,  // heartbeat pause after a native beforeunload prompt
+});
+const CONTENT_DIALOG_TYPES = new Set(['alert', 'confirm', 'prompt', 'beforeunload']);
+const MAX_PORT_TEXT = 2000;
+const DIALOG_RATE_WINDOW_MS = 5000;
+const DIALOG_RATE_MAX = 10;
 export const MAX_EVENT_TEXT = 200;
 
 // Navigation errors that are normal browser behaviour, not page failures.
@@ -115,6 +153,16 @@ export function createEventWatchdog(opts = {}) {
   const now = typeof opts.now === 'function' ? opts.now : () => Date.now();
   const isRunTabExtra = typeof opts.isRunTab === 'function' ? opts.isRunTab : null;
   const onDialog = typeof opts.onDialog === 'function' ? opts.onDialog : null;
+  // compat/webext-shim.js installs a chrome.debugger fake on Firefox for input
+  // commands; it marks itself emitsEvents:false because it never fires CDP events.
+  const hasDebugger = !!(api && api.debugger && api.debugger.onEvent && api.debugger.emitsEvents !== false);
+  const contentLane = typeof opts.contentLane === 'boolean' ? opts.contentLane : !hasDebugger;
+  const _ms = (k) => (Number.isFinite(opts[k]) && opts[k] >= 0 ? opts[k] : CONTENT_LANE_DEFAULTS[k]);
+  const heartbeatMs = _ms('heartbeatMs');
+  const hangTimeoutMs = _ms('hangTimeoutMs');
+  const disconnectGraceMs = _ms('disconnectGraceMs');
+  const navGraceMs = _ms('navGraceMs');
+  const dialogSuspendMs = _ms('dialogSuspendMs');
 
   const tabs = new Set();
   let primaryTabId = typeof opts.tabId === 'number' ? opts.tabId : null;
@@ -127,6 +175,13 @@ export function createEventWatchdog(opts = {}) {
   let active = false;
   const downloads = new Map(); // id -> { filename, mime, url, totalBytes }
   const subscriptions = [];
+  // Content lane state.
+  const pagePorts = new Map();    // tabId -> Set<{port, tabId, frameId, origin, connectedAt, lastPong, seq, hung, armed}>
+  const lastNav = new Map();      // tabId -> ts of the latest navigation/reload signal
+  const suspendUntil = new Map(); // tabId -> ts; no hang verdicts before it
+  const dialogTimes = new Map();  // tabId -> recent content dialog report ts (rate limit)
+  const pendingTimers = new Set();
+  let hbTimer = null;
 
   function isRunTab(tabId) {
     if (typeof tabId !== 'number' || tabId < 0) return false;
@@ -186,6 +241,7 @@ export function createEventWatchdog(opts = {}) {
   // ── navigation ──
   function onCommitted(d) {
     if (!d || d.frameId !== 0 || !isRunTab(d.tabId)) return;
+    if (contentLane) markNav(d.tabId);
     pageChanged = true;
     push('navigation', d.tabId, `Page changed (${d.transitionType || 'navigation'}): ${_cleanEventText(d.url || '')}. Element indexes/refs from earlier steps are stale.`);
   }
@@ -267,6 +323,198 @@ export function createEventWatchdog(opts = {}) {
     }
   }
 
+  // ── content lane (no chrome.debugger) ──
+  function markNav(tabId) { lastNav.set(tabId, now()); }
+  function navSince(tabId, since) {
+    const t = lastNav.get(tabId);
+    return typeof t === 'number' && t >= since;
+  }
+  function safePost(port, msg) {
+    try { port.postMessage(msg); return true; } catch (_e) { return false; }
+  }
+  function senderOrigin(sender) {
+    if (!sender) return '';
+    if (typeof sender.origin === 'string' && sender.origin) return sender.origin;
+    try { return sender.url ? new URL(sender.url).origin : ''; } catch (_e) { return ''; }
+  }
+  function hasNewerFramePort(tabId, since) {
+    const set = pagePorts.get(tabId);
+    if (!set) return false;
+    for (const r of set) if (r.frameId === 0 && r.connectedAt >= since) return true;
+    return false;
+  }
+  function removeRec(rec) {
+    const set = pagePorts.get(rec.tabId);
+    if (!set) return;
+    set.delete(rec);
+    if (!set.size) pagePorts.delete(rec.tabId);
+  }
+  /** Resolves the tab, null when it no longer exists, undefined when it cannot be checked. */
+  async function getTab(tabId) {
+    if (!api || !api.tabs || typeof api.tabs.get !== 'function') return undefined;
+    try { return (await api.tabs.get(tabId)) || null; } catch (_e) { return null; }
+  }
+
+  function onPageConnect(port) {
+    if (!active || !port || port.name !== PAGE_WATCH_PORT) return;
+    const sender = port.sender || {};
+    const tabId = sender.tab && typeof sender.tab.id === 'number' ? sender.tab.id : null;
+    if (tabId === null) return; // not a tab content script
+    const t = now();
+    const rec = {
+      port, tabId,
+      frameId: typeof sender.frameId === 'number' ? sender.frameId : 0,
+      origin: senderOrigin(sender),
+      connectedAt: t, lastPong: t, seq: 0, hung: false, armed: isRunTab(tabId),
+    };
+    let set = pagePorts.get(tabId);
+    if (!set) { set = new Set(); pagePorts.set(tabId, set); }
+    set.add(rec);
+    _addL(port.onMessage, (msg) => onPortMessage(rec, msg));
+    _addL(port.onDisconnect, () => onPortDisconnect(rec));
+    safePost(port, { type: 'arm', armed: rec.armed });
+  }
+
+  function onPortMessage(rec, msg) {
+    if (!active || !msg || typeof msg !== 'object') return;
+    if (msg.type === 'pong') { rec.lastPong = now(); rec.hung = false; return; }
+    if (msg.type === 'dialog') handleContentDialog(rec, msg);
+    // Anything else is ignored: the page side can only ever report a dialog.
+  }
+
+  function handleContentDialog(rec, msg) {
+    const tabId = rec.tabId;
+    if (!isRunTab(tabId)) return;
+    const type = msg.dialogType;
+    if (typeof type !== 'string' || !CONTENT_DIALOG_TYPES.has(type)) return;
+    if (msg.message !== undefined && (typeof msg.message !== 'string' || msg.message.length > MAX_PORT_TEXT)) return;
+    const t = now();
+    const recent = (dialogTimes.get(tabId) || []).filter((x) => t - x < DIALOG_RATE_WINDOW_MS);
+    if (recent.length >= DIALOG_RATE_MAX) { dialogTimes.set(tabId, recent); return; }
+    recent.push(t);
+    dialogTimes.set(tabId, recent);
+    rec.lastPong = t; // the page just talked to us, so it is alive
+    const message = _cleanEventText(msg.message || '');
+    const where = `${_cleanEventText(rec.origin) || 'unknown origin'}${rec.frameId ? `, frame ${rec.frameId}` : ''}`;
+    const extra = { dialogType: type, lane: 'content', origin: rec.origin, frameId: rec.frameId };
+    if (type === 'alert') {
+      push('dialog', tabId, `JS alert "${message}" (${where}) was auto-accepted by the page-script guard (this browser has no debugger API).`, { ...extra, outcome: 'accepted' });
+    } else if (type === 'beforeunload') {
+      suspendUntil.set(tabId, t + dialogSuspendMs);
+      push('dialog', tabId, `Page (${where}) raised a "leave this page?" beforeunload prompt. This browser has no debugger API, so Sentinel cannot answer it; the user must choose. Do not assume the navigation happened.`, { ...extra, outcome: 'native' });
+    } else {
+      push('dialog', tabId, `JS ${type} dialog "${message}" (${where}) was DISMISSED (Cancel) by default: this browser has no debugger API, so the page-script guard answered it synchronously and the user could not be asked. If the task needs it accepted, tell the user.`, { ...extra, outcome: 'dismissed' });
+    }
+  }
+
+  function onPortDisconnect(rec) {
+    removeRec(rec);
+    if (!active || rec.frameId !== 0 || !isRunTab(rec.tabId)) return;
+    const at = now();
+    // The old document's Port always drops on navigation or reload.
+    if (navSince(rec.tabId, at - navGraceMs)) return;
+    const timer = setTimeout(() => {
+      pendingTimers.delete(timer);
+      confirmDisconnect(rec.tabId, at).catch(() => {});
+    }, disconnectGraceMs);
+    pendingTimers.add(timer);
+  }
+
+  /** After the grace period: is a Port drop at `at` a dead page? */
+  async function confirmDisconnect(tabId, at) {
+    const benign = () => !active || !isRunTab(tabId) || navSince(tabId, at - navGraceMs) || hasNewerFramePort(tabId, at);
+    if (benign()) return false;
+    const tab = await getTab(tabId);
+    // null: the tab is gone and onRemoved reports TAB_CLOSED. undefined: cannot verify, stay quiet.
+    if (!tab || benign() || tab.status === 'loading') return false;
+    if (tab.discarded) {
+      push('tab_discarded', tabId, `Tab ${tabId} was discarded by the browser; its page state is gone. Reload it before acting.`);
+      return false;
+    }
+    setFatal(WATCHDOG_ERRORS.TAB_CRASHED, tabId, `Tab ${tabId} page died: its content-script connection dropped with no navigation or reload in flight (no debugger on this browser, so the crash is inferred).`);
+    return true;
+  }
+
+  function onTabUpdated(tabId, change) {
+    if (!active || !change || !isRunTab(tabId)) return;
+    if (change.status === 'loading' || typeof change.url === 'string') markNav(tabId);
+    if (change.discarded === true) {
+      push('tab_discarded', tabId, `Tab ${tabId} was discarded by the browser; its page state is gone. Reload it before acting.`);
+    }
+    if (change.crashed === true) {
+      setFatal(WATCHDOG_ERRORS.TAB_CRASHED, tabId, `Tab ${tabId} renderer crashed (tabs.onUpdated).`);
+    }
+  }
+
+  function onBeforeNavigate(d) {
+    if (d && d.frameId === 0 && isRunTab(d.tabId)) markNav(d.tabId);
+  }
+
+  /** One heartbeat tick: ping live pages, judge the silent ones. */
+  async function checkHeartbeats() {
+    if (!active) return [];
+    const t = now();
+    const silent = [];
+    for (const [tabId, set] of pagePorts) {
+      if (!isRunTab(tabId)) continue;
+      const paused = (suspendUntil.get(tabId) || 0) > t || navSince(tabId, t - navGraceMs);
+      for (const rec of set) {
+        if (rec.frameId !== 0) continue;
+        if (paused) { rec.lastPong = t; continue; }
+        if (!rec.hung && t - rec.lastPong > hangTimeoutMs) {
+          rec.hung = true;
+          silent.push(rec);
+        } else if (!rec.hung) {
+          rec.seq++;
+          safePost(rec.port, { type: 'ping', seq: rec.seq });
+        }
+      }
+    }
+    const crashed = [];
+    for (const rec of silent) {
+      const tab = await getTab(rec.tabId);
+      if (!active || !tab || tab.discarded || tab.status === 'loading' || navSince(rec.tabId, t - navGraceMs)) {
+        rec.hung = false;
+        rec.lastPong = now();
+        continue;
+      }
+      setFatal(WATCHDOG_ERRORS.TAB_CRASHED, rec.tabId, `Tab ${rec.tabId} is unresponsive: no heartbeat from the page for ${Math.round(hangTimeoutMs / 1000)}s (no debugger on this browser, so the hang is inferred).`);
+      crashed.push(rec.tabId);
+    }
+    return crashed;
+  }
+
+  /** Arm an existing run-tab Port, or ask the tab's bridge to (re)connect. */
+  function requestPageConnect(tabId) {
+    if (!contentLane || !active || typeof tabId !== 'number' || !isRunTab(tabId)) return;
+    const set = pagePorts.get(tabId);
+    if (set && set.size) {
+      for (const r of set) if (!r.armed) { r.armed = true; safePost(r.port, { type: 'arm', armed: true }); }
+      return;
+    }
+    if (!api || !api.tabs || typeof api.tabs.sendMessage !== 'function') return;
+    try {
+      const p = api.tabs.sendMessage(tabId, { type: PAGE_WATCH_CONNECT_MSG });
+      if (p && typeof p.catch === 'function') p.catch(() => {});
+    } catch (_e) { /* no content script in that tab (yet) */ }
+  }
+
+  function stopContentLane() {
+    if (hbTimer !== null) { clearInterval(hbTimer); hbTimer = null; }
+    for (const timer of pendingTimers) clearTimeout(timer);
+    pendingTimers.clear();
+    for (const set of pagePorts.values()) {
+      for (const r of set) {
+        safePost(r.port, { type: 'arm', armed: false });
+        try { r.port.disconnect(); } catch (_e) { /* already gone */ }
+      }
+    }
+    pagePorts.clear();
+    lastNav.clear();
+    suspendUntil.clear();
+    dialogTimes.clear();
+  }
+
   function sub(evt, fn) {
     if (_addL(evt, fn)) subscriptions.push([evt, fn]);
   }
@@ -286,6 +534,16 @@ export function createEventWatchdog(opts = {}) {
       sub(nav && nav.onCreatedNavigationTarget, onCreatedNavigationTarget);
       sub(api.tabs && api.tabs.onRemoved, onTabRemoved);
       sub(api.debugger && api.debugger.onEvent, onDebuggerEvent);
+      if (contentLane && api.runtime && api.runtime.onConnect) {
+        sub(api.runtime.onConnect, onPageConnect);
+        sub(api.tabs && api.tabs.onUpdated, onTabUpdated);
+        sub(nav && nav.onBeforeNavigate, onBeforeNavigate);
+        if (heartbeatMs > 0) {
+          hbTimer = setInterval(() => { checkHeartbeats().catch(() => {}); }, heartbeatMs);
+          if (hbTimer && typeof hbTimer.unref === 'function') hbTimer.unref();
+        }
+        requestPageConnect(primaryTabId);
+      }
       return this;
     },
     stop() {
@@ -294,6 +552,7 @@ export function createEventWatchdog(opts = {}) {
         const [evt, fn] = subscriptions.pop();
         _removeL(evt, fn);
       }
+      stopContentLane();
       events = [];
       dropped = 0;
       fatal = null;
@@ -303,13 +562,19 @@ export function createEventWatchdog(opts = {}) {
     },
     isActive() { return active; },
     listenerCount() { return subscriptions.length; },
-    addTab(tabId) { if (typeof tabId === 'number') tabs.add(tabId); },
+    addTab(tabId) {
+      if (typeof tabId !== 'number') return;
+      tabs.add(tabId);
+      requestPageConnect(tabId);
+    },
     hasTab(tabId) { return isRunTab(tabId); },
     setPrimaryTab(tabId) {
       if (typeof tabId !== 'number') return;
       primaryTabId = tabId;
       tabs.add(tabId);
+      requestPageConnect(tabId);
     },
+    isContentLane() { return contentLane; },
     getPrimaryTab() { return primaryTabId; },
     /** Fatal + page-changed flags since the last call. Clears both. */
     takeSignals() {
@@ -328,7 +593,7 @@ export function createEventWatchdog(opts = {}) {
     peekEvents() { return events.slice(); },
     respondToDialog,
     // Exposed for tests.
-    _handlers: { onDownloadCreated, onDownloadChanged, onCommitted, onHistoryStateUpdated, onNavError, onCreatedNavigationTarget, onTabRemoved, onDebuggerEvent },
+    _handlers: { onDownloadCreated, onDownloadChanged, onCommitted, onHistoryStateUpdated, onNavError, onCreatedNavigationTarget, onTabRemoved, onDebuggerEvent, onPageConnect, onTabUpdated, onBeforeNavigate, checkHeartbeats, confirmDisconnect },
   };
 }
 
