@@ -1,0 +1,28 @@
+name: CI
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md', 'docs/**', 'assets/**', 'LICENSE', 'NOTICE', 'TRADEMARK.md', '.gitignore']
+  pull_request:
+    paths-ignore: ['**.md', 'docs/**', 'assets/**', 'LICENSE', 'NOTICE', 'TRADEMARK.md', '.gitignore']
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install dev dependencies
+        run: |
+          if [ -f package-lock.json ]; then npm ci; else npm install; fi
+      - name: Unit tests
+        run: npm test
+      - name: web-ext lint
+        run: npm run lint
