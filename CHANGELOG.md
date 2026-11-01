@@ -159,7 +159,7 @@ exceptions where the real addon produces none.
 
 `tests/credential-broker.test.js` (62 tests) covers every backend, the cache,
 the migration paths and the fail-closed rule. The host was verified directly on
-nuke-standby over the real wire protocol: install, self-test, ping/put/get/list/
+`test-host` over the real wire protocol: install, self-test, ping/put/get/list/
 delete round-trip, no key material in `list`, no plaintext key anywhere in HOME,
 and a clean uninstall. Full suite: 10358 passing, 0 failing; lint 0 errors.
 
@@ -258,7 +258,7 @@ a delivered one both produce a quiet console — the shim now also writes a
 timestamp) on every port event, so "is the panel actually registering?" is
 answerable from the profile without a debugger.
 
-Verified on `nuke-standy`: 4/4 runs, 0 uncaught exceptions (baseline ~78% per
+Verified on `test-host`: 4/4 runs, 0 uncaught exceptions (baseline ~78% per
 run). Extension storage IDB confirmed the extension actually executed
 (`approvalMode`, `sentinel_schedules`). A follow-up probe opened the panel
 document and read the diagnostic back out of the profile: `event: connect` with a
