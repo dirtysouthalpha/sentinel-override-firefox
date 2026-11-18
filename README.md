@@ -7,9 +7,6 @@
 ![Manifest V3](https://img.shields.io/badge/manifest-v3-blue)
 ![Firefox 128+](https://img.shields.io/badge/Firefox-128%2B-orange)
 
-<!-- TODO: replace with real screenshot or GIF -->
-![Sentinel Override screenshot placeholder](assets/demo-placeholder.svg)
-
 ## Quickstart
 
 Load as a temporary add-on (no build step; the tree is the extension):
